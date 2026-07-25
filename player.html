@@ -64,7 +64,7 @@
 
 <script>
 /* ================= CONFIG ================= */
-const PLAYER_VERSION = 'v2.8d';   // versão do player — aparece na coluna VERSÃO do painel
+const PLAYER_VERSION = 'v2.9d';   // versão do player — aparece na coluna VERSÃO do painel
 const SB_URL = 'https://wjyaxmbkdjebulosdtds.supabase.co';
 const SB_KEY = 'sb_publishable_mmTZZoQCGe24bTshASUi1w_JKnyU4sv';
 const MEDIA_BASE = SB_URL + '/storage/v1/object/public/blinplay-media/';
@@ -112,8 +112,33 @@ function heapMB(){
   }catch(e){ return null; }
 }
 let ultEstimate = null;
+/* serie de heap para calcular TENDENCIA. E isso que permite concluir em
+   15 min em vez de esperar o colapso: se a inclinacao e positiva e
+   sustentada, ha vazamento; se oscila em torno de zero, nao ha. */
+let serieHeap = [];   // {t, usado}
+function tendenciaHeap(){
+  if(serieHeap.length < 3) return null;
+  const t0 = serieHeap[0], tn = serieHeap[serieHeap.length-1];
+  const min = Math.min(...serieHeap.map(p=>p.usado));
+  const max = Math.max(...serieHeap.map(p=>p.usado));
+  const mins = (tn.t - t0.t)/60000;
+  const incl = mins > 0.5 ? (tn.usado - t0.usado)/mins : null;
+  return { min, max, incl, mins, amostras: serieHeap.length };
+}
+function veredito(){
+  const d = tendenciaHeap();
+  if(!d || d.mins < 5) return 'medindo (precisa de ~5 min)';
+  if(d.incl === null) return 'medindo';
+  if(d.incl > 0.8)  return 'VAZAMENTO: +'+d.incl.toFixed(2)+' MB/min';
+  if(d.incl > 0.25) return 'suspeito: +'+d.incl.toFixed(2)+' MB/min';
+  return 'ESTAVEL ('+d.incl.toFixed(2)+' MB/min)';
+}
 async function amostrar(){
   const h = heapMB();
+  if(h){
+    serieHeap.push({ t: Date.now(), usado: h.usado });
+    if(serieHeap.length > 240) serieHeap.shift();
+  }
   let st = '';
   try{
     if(navigator.storage && navigator.storage.estimate){
@@ -122,7 +147,9 @@ async function amostrar(){
       st = ' cache='+(e.usage/1048576).toFixed(1)+'MB/'+(e.quota/1048576).toFixed(0)+'MB';
     }
   }catch(e){}
+  const tt = tendenciaHeap();
   logar('AMOSTRA up='+hhmmss(Date.now()-bootEm)+
+        (tt? ' tend='+(tt.incl===null?'?':tt.incl.toFixed(2))+'MB/min min='+tt.min+' max='+tt.max : '')+
         ' voltas='+voltas+' trocas='+trocas+' erros='+erros+
         (h? ' heap='+h.usado+'/'+h.total+'MB (lim '+h.limite+')' : ' heap=n/d')+
         st);
@@ -150,7 +177,9 @@ function pintarHud(){
     'heap.....: '+(h? h.usado+' / '+h.total+' MB  (limite '+h.limite+')' : 'n/d'),
     'playlist.: '+playlist.length+' itens, indisp='+indisponiveis.size,
     'tocando..: #'+idx+' '+(item? (item.tipo||'?')+' '+String(item.path||'').slice(-26) : '-'),
-    'voltas...: '+voltas+'   trocas: '+trocas+'   erros: '+erros
+    'voltas...: '+voltas+'   trocas: '+trocas+'   erros: '+erros,
+    '<b>VEREDITO: '+veredito()+'</b>',
+    'envio log: '+statusEnvio
   ];
   document.getElementById('hud').innerHTML = linhas.join('\n');
 }
@@ -194,6 +223,48 @@ function registrarToque(){
   if(toques.length >= 4){ toques = []; alternarDiag(); }
 }
 
+/* ---- ENVIO DO LOG PARA O SUPABASE ----
+   A frota esta online 24/7. Em vez de fotografar TV, o box entrega o
+   registro sozinho. Fila em localStorage: se estiver offline, acumula e
+   envia quando a rede voltar. O log da sessao que MORREU e o primeiro a
+   subir no boot seguinte -- e ai a falha aparece no painel sem ninguem
+   estar na frente do box. */
+let statusEnvio = 'aguardando';
+const FILA_KEY = 'blinplay_fila_log';
+
+function enfileirar(pacote){
+  try{
+    const f = JSON.parse(localStorage.getItem(FILA_KEY)||'[]');
+    f.push(pacote);
+    while(f.length > 12) f.shift();          // nao cresce sem limite
+    localStorage.setItem(FILA_KEY, JSON.stringify(f));
+  }catch(e){}
+}
+
+async function esvaziarFila(){
+  if(!sb || !token){ statusEnvio='sem token'; return; }
+  let f = [];
+  try{ f = JSON.parse(localStorage.getItem(FILA_KEY)||'[]'); }catch(e){ return; }
+  if(!f.length){ statusEnvio='fila vazia'; return; }
+  statusEnvio = 'enviando '+f.length+'...';
+  const restantes = [];
+  for(const pac of f){
+    try{
+      const { error } = await sb.rpc('gravar_log_player', {
+        p_token:   token,
+        p_versao:  PLAYER_VERSION,
+        p_sessao:  pac.sessao,
+        p_motivo:  pac.motivo,
+        p_eventos: pac.eventos
+      });
+      if(error) throw error;
+    }catch(e){ restantes.push(pac); }
+  }
+  try{ localStorage.setItem(FILA_KEY, JSON.stringify(restantes)); }catch(e){}
+  statusEnvio = restantes.length ? 'pendente '+restantes.length : 'enviado ok';
+  logar('ENVIO-LOG '+statusEnvio);
+}
+
 function iniciarDiag(){
   // rotaciona: o log desta sessao vira "anterior" na proxima abertura
   try{
@@ -202,6 +273,13 @@ function iniciarDiag(){
     localStorage.removeItem(LOG_KEY);
   }catch(e){}
   LOG = [];
+  // a sessao que morreu vai para a fila de envio imediatamente
+  try{
+    const ant = JSON.parse(localStorage.getItem(LOG_PREV)||'null');
+    if(ant && ant.length){
+      enfileirar({ sessao:'anterior', motivo:'reinicio/queda', eventos: ant.slice(-160) });
+    }
+  }catch(e){}
   logar('BOOT player='+PLAYER_VERSION+' online='+navigator.onLine+
         ' ua='+(navigator.userAgent||'').slice(0,70));
   logar('SW inicial: '+estadoSW());
@@ -214,7 +292,12 @@ function iniciarDiag(){
     erros++;
     logar('PROMISE-REJEITADA '+String((ev.reason&&ev.reason.message)||ev.reason||'?').slice(0,120));
   });
-  window.addEventListener('online',  ()=> logar('REDE online'));
+  window.addEventListener('online',  ()=>{
+    logar('REDE online');
+    rtEspera = 10000;
+    clearTimeout(rtRetry);
+    rtRetry = setTimeout(ligarRealtime, 2000);
+  });
   window.addEventListener('offline', ()=> logar('REDE offline'));
 
   window.addEventListener('keydown',     registrarToque);
@@ -228,6 +311,17 @@ function iniciarDiag(){
   setInterval(amostrar, 60000);    // amostra de memoria a cada minuto -> disco
   amostrar();
   logar('DIAG por controle: 4 toques rapidos em qualquer botao');
+
+  // sobe o que estiver na fila: no boot, quando a rede volta, e a cada 30 min
+  setTimeout(esvaziarFila, 8000);
+  window.addEventListener('online', ()=> setTimeout(esvaziarFila, 4000));
+  setInterval(()=>{
+    // enfileira um retrato periodico da sessao viva e tenta subir
+    const tt = tendenciaHeap();
+    enfileirar({ sessao:'viva', motivo:'amostra periodica',
+                 eventos: LOG.slice(-60).concat(['TENDENCIA '+veredito()]) });
+    esvaziarFila();
+  }, 30*60*1000);
 }
 let persistOK = 'n/d';
 
@@ -241,6 +335,8 @@ let lastSig = '';       // assinatura da playlist (pra trocar só quando muda)
 let CHANNEL_ID = null;  // id do canal (vem da RPC) — usado no Realtime
 let rtChannel = null;   // canal de assinatura Realtime
 let rtDebounce = null;  // evita re-sync múltiplo em rajada de eventos
+let rtRetry = null;     // timer de reconexão do Realtime (com recuo)
+let rtEspera = 10000;   // espera atual do recuo exponencial (teto 5 min)
 
 /* ---- controle de ciclo (regime 24/7) ----
    geracao: cada tocar() incrementa. Todo callback assíncrono guarda a
@@ -597,7 +693,9 @@ function precarregarMidias(data){
    Se a conexão cair, o setInterval de fallback (5 min) cobre o intervalo.
 */
 function ligarRealtime(){
-  if(rtChannel){ try{ sb.removeChannel(rtChannel); }catch(e){} }
+  clearTimeout(rtRetry);
+  if(rtChannel){ try{ sb.removeChannel(rtChannel); }catch(e){} rtChannel = null; }
+  if(!navigator.onLine) return;      // offline: não cria canal à toa
 
   const aoMudar = ()=>{
     clearTimeout(rtDebounce);
@@ -625,10 +723,24 @@ function ligarRealtime(){
     .on('postgres_changes', { event:'*', schema:'public', table:'campaign_channels'   }, aoMudar)
     .on('postgres_changes', { event:'*', schema:'public', table:'channels'            }, aoMudarCanal)
     .subscribe((status)=>{
-      if(status==='SUBSCRIBED') realtimeOK = true;
+      if(status==='SUBSCRIBED'){
+        realtimeOK = true;
+        rtEspera = 10000;              // reconectou: zera o recuo
+        return;
+      }
       if(status==='CLOSED' || status==='CHANNEL_ERROR' || status==='TIMED_OUT'){
         realtimeOK = false;
-        setTimeout(ligarRealtime, 10000);
+        // RECUO EXPONENCIAL, teto de 5 min. E se o box esta offline, NAO
+        // insiste: espera o evento 'online'. Sem isso, um box que nunca
+        // mais ve internet recria canal a cada 10s pelo resto da vida --
+        // 3 milhoes de recriacoes por ano dentro do supabase-js.
+        clearTimeout(rtRetry);
+        if(!navigator.onLine){
+          logar('RT offline: reconexao suspensa ate a rede voltar');
+          return;
+        }
+        rtEspera = Math.min(rtEspera * 2, 300000);
+        rtRetry = setTimeout(ligarRealtime, rtEspera);
       }
     });
 }
@@ -639,6 +751,7 @@ function ligarRealtime(){
 function ligarFallback(){
   if(resyncTimer) return;
   resyncTimer = setInterval(async ()=>{
+    if(!navigator.onLine) return;     // offline: não gasta CPU com RPC que vai falhar
     try{
       // 1) pedido de refresh remoto?
       const r = await sb.rpc('checar_refresh', { p_token: token });
