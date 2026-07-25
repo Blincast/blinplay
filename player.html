@@ -64,7 +64,7 @@
 
 <script>
 /* ================= CONFIG ================= */
-const PLAYER_VERSION = 'v2.10d';   // versão do player — aparece na coluna VERSÃO do painel
+const PLAYER_VERSION = 'v3.0d';   // versão do player — aparece na coluna VERSÃO do painel
 const SB_URL = 'https://wjyaxmbkdjebulosdtds.supabase.co';
 const SB_KEY = 'sb_publishable_mmTZZoQCGe24bTshASUi1w_JKnyU4sv';
 const MEDIA_BASE = SB_URL + '/storage/v1/object/public/blinplay-media/';
@@ -171,7 +171,8 @@ function pintarHud(){
   const linhas = [
     '<b>BlinPlay '+PLAYER_VERSION+'</b>  up '+hhmmss(Date.now()-bootEm),
     'SW.......: '+estadoSW(),
-    'persist..: '+persistOK,
+    'midia....: '+(NATIVO? 'NATIVA (arquivo do app)' : 'cache do navegador'),
+    'persist..: '+persistOK+(NATIVO? '  (irrelevante no modo nativo)' : ''),
     'rede.....: '+(navigator.onLine? 'online':'OFFLINE'),
     'cache....: '+(ultEstimate? (ultEstimate.usage/1048576).toFixed(1)+' MB de '+(ultEstimate.quota/1048576).toFixed(0)+' MB' : 'medindo...'),
     'heap.....: '+(h? h.usado+' / '+h.total+' MB  (limite '+h.limite+')' : 'n/d'),
@@ -285,6 +286,18 @@ async function auditarCache(){
   let esperados = [];
   try{ esperados = JSON.parse(localStorage.getItem(MIDIAS_KEY)||'[]'); }catch(e){}
   if(!esperados.length){ return; }
+
+  // modo nativo: quem sabe da midia e o Kotlin
+  if(NATIVO){
+    try{
+      const r = JSON.parse(window.BlinPlayNative.relatorioMidias(JSON.stringify(esperados)));
+      auditoria = { ok:r.ok||0, total:r.total||esperados.length,
+                    faltando: (r.faltam? new Array(r.faltam).fill('?') : []) };
+      logar('NATIVO midias '+auditoria.ok+'/'+auditoria.total+
+            ' ('+(r.mb||0)+' MB, livre '+(r.livreMb||'?')+' MB)');
+    }catch(e){ logar('NATIVO relatorio falhou'); }
+    return;
+  }
   if(!('caches' in window)){ logar('AUDITORIA indisponivel (sem Cache API)'); return; }
   try{
     const c = await caches.open('media-v1');
@@ -381,6 +394,11 @@ function iniciarDiag(){
   }, 30*60*1000);
 }
 let persistOK = 'n/d';
+/* armazenamento nativo disponivel? (APK BlinPlay com MediaStore) */
+const NATIVO = (function(){
+  try{ return !!(window.BlinPlayNative && window.BlinPlayNative.nativo()); }
+  catch(e){ return false; }
+})();
 
 /* ================= ESTADO ================= */
 let sb = null;
@@ -727,6 +745,20 @@ function precarregarMidias(data){
 
   // 1) baixa o que ainda não está em cache (o SW intercepta e guarda)
   urls.forEach(url=> fetch(url, { mode:'no-cors' }).catch(()=>{}));
+
+  // 2a) ARMAZENAMENTO NATIVO: se o APK expõe a ponte, ele passa a ser o
+  //     responsável pela mídia. Avisa o SW para sair da frente e manda a
+  //     lista para o Kotlin baixar e guardar como arquivo do app.
+  if(NATIVO){
+    try{
+      window.BlinPlayNative.sincronizarMidias(JSON.stringify(todas));
+      if(navigator.serviceWorker && navigator.serviceWorker.controller){
+        navigator.serviceWorker.controller.postMessage({ tipo:'nativo' });
+      }
+      logar('NATIVO sync solicitado: '+todas.length+' midias');
+    }catch(e){ logar('NATIVO falhou: '+String(e&&e.message||e).slice(0,60)); }
+    return;   // no modo nativo não usa Cache API para mídia
+  }
 
   // 2) pede ao SW para revalidar o que JÁ está em cache: se a mídia foi
   //    trocada no portal com o mesmo nome de arquivo, o ETag/tamanho muda
