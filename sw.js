@@ -34,7 +34,7 @@
    - Cota: falha de escrita é capturada, a entrada parcial é apagada e
      o download é reagendado. Nunca fica entrada meio-gravada.
    ============================================================ */
-const VERSION     = 'blinplay-v4';
+const VERSION     = 'blinplay-v5';
 const APP_CACHE   = 'app-' + VERSION;
 const MEDIA_CACHE = 'media-v1';      // preservado entre versões
 
@@ -66,9 +66,15 @@ self.addEventListener('activate', (e) => {
   })());
 });
 
+/* Quando o APK tem armazenamento nativo, o SW SAI da frente da midia:
+   quem serve os bytes e o Kotlin, a partir de arquivo do app. O SW
+   continua cuidando apenas do shell (player.html, sdk). */
+let NATIVO = false;
+
 self.addEventListener('message', (e) => {
   const d = e.data;
   if (d === 'skipWaiting') { self.skipWaiting(); return; }
+  if (d && d.tipo === 'nativo') { NATIVO = true; return; }
   if (d === 'clearMedia')  { caches.delete(MEDIA_CACHE); tamanhos.clear(); return; }
   if (d && d.tipo === 'revalidar' && Array.isArray(d.urls)) {
     e.waitUntil(revalidarLista(d.urls));
@@ -305,6 +311,8 @@ self.addEventListener('fetch', (e) => {
 
   if (req.method !== 'GET') return;           // POST/RPC: rede direta
 
+  // midia nativa: nao intercepta, deixa a WebView entregar do disco do app
+  if (isMedia(url) && NATIVO) return;
   if (isMedia(url)) { e.respondWith(serveMedia(req)); return; }
 
   if (isShell(url)) {
