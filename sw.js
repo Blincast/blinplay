@@ -1,38 +1,63 @@
 /* ============================================================
-   BlinPlay Service Worker - v3 (mídia offline de verdade)
-   - Player/SDK (shell): REDE PRIMEIRO. Sempre pega a versão nova
-     quando online; cai pro cache só se a rede falhar (offline).
-   - Mídia (imagens/vídeos do Storage): cacheia o ARQUIVO INTEIRO
-     (fetch CORS, resposta 200 completa) e serve offline. Quando o
-     player pede um pedaço via Range (vídeo), fatiamos do cache e
-     devolvemos 206 Partial Content. Isso conserta o vídeo que só
-     tocava online e caía ao perder a rede.
-   - Programação (RPC) e demais POSTs: rede direta, sem cache.
+   BlinPlay Service Worker - v4 (24/7 offline, memória constante)
 
-   Nota técnica: a Cache API NÃO aceita guardar resposta 206, e
-   requisição de vídeo vem com header Range. Por isso baixamos o
-   arquivo inteiro (sem repassar Range) e fatiamos nós mesmos.
+   MUDANÇA CENTRAL EM RELAÇÃO AO v3
+   --------------------------------
+   O v3 servia Range fatiando um arrayBuffer() do arquivo INTEIRO.
+   Cada requisição Range de vídeo carregava o arquivo todo na RAM.
+   Como o <video> dispara muitas requisições Range por reprodução e
+   recomeça a cada volta do rodízio, o consumo crescia sem limite até
+   o Android matar o processo. Em regime 24/7 isso é fatal.
+
+   O v4 fatia POR STREAMING: lê o corpo cacheado em pedaços, descarta
+   o que está antes da janela pedida, emite só a janela e cancela o
+   leitor. O pico de memória é o tamanho de um pedaço (dezenas de KB),
+   independente do tamanho do vídeo. Crescimento zero por ciclo.
+
+   Também removido: todo `resp.clone()` cujo segundo ramo nunca era
+   lido. Clonar uma Response e não consumir um dos ramos faz o corpo
+   inteiro ser bufferizado em memória — era uma segunda fonte de
+   vazamento no v3.
+
+   COMPORTAMENTO
+   -------------
+   - Mídia: CACHE PRIMEIRO, sempre. Online e offline percorrem o mesmo
+     caminho. A rede só serve para ENCHER o cache (em segundo plano) e
+     para atender a primeiríssima exibição de um arquivo ainda não
+     baixado. Depois de cacheado, a rede não é mais tocada.
+   - Revalidação: o player manda a lista de mídias a cada sync. O SW
+     compara ETag/tamanho por HEAD e rebaixa só o que mudou no portal.
+     É assim que "trocar a mídia no portal" se propaga sem reload.
+   - Shell (player.html, sdk): rede primeiro, cache como rede de
+     segurança — com ignoreSearch, para que um reload OFFLINE de
+     player.html?code=NNNNNN encontre o shell cacheado.
+   - Cota: falha de escrita é capturada, a entrada parcial é apagada e
+     o download é reagendado. Nunca fica entrada meio-gravada.
    ============================================================ */
-const VERSION     = 'blinplay-v3';
-const APP_CACHE   = 'app-' + VERSION;   // shell (html, sdk)
-const MEDIA_CACHE = 'media-v1';         // mídias (persiste entre versões)
+const VERSION     = 'blinplay-v4';
+const APP_CACHE   = 'app-' + VERSION;
+const MEDIA_CACHE = 'media-v1';      // preservado entre versões
 
 const APP_ASSETS = [
   './player.html',
   'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2'
 ];
 
+/* tamanho total por URL. Evita reler o arquivo para descobrir o total
+   em cada Range. Memória: alguns bytes por mídia. */
+const tamanhos = new Map();
+/* downloads em andamento, para não baixar o mesmo arquivo em paralelo */
+const inflight = new Map();
+/* ETag por URL, para detectar mídia trocada no portal */
+const etags = new Map();
+
 self.addEventListener('install', (e) => {
-  // assume o controle imediatamente, sem esperar abas antigas fecharem
   self.skipWaiting();
-  e.waitUntil(
-    caches.open(APP_CACHE).then(c => c.addAll(APP_ASSETS).catch(()=>{}))
-  );
+  e.waitUntil(caches.open(APP_CACHE).then(c => c.addAll(APP_ASSETS).catch(()=>{})));
 });
 
 self.addEventListener('activate', (e) => {
   e.waitUntil((async () => {
-    // remove caches de app antigos (mantém o de mídia)
     const keys = await caches.keys();
     await Promise.all(keys.map(k => {
       if (k.startsWith('app-') && k !== APP_CACHE) return caches.delete(k);
@@ -42,8 +67,12 @@ self.addEventListener('activate', (e) => {
 });
 
 self.addEventListener('message', (e) => {
-  if (e.data === 'skipWaiting') self.skipWaiting();
-  if (e.data === 'clearMedia')  caches.delete(MEDIA_CACHE);
+  const d = e.data;
+  if (d === 'skipWaiting') { self.skipWaiting(); return; }
+  if (d === 'clearMedia')  { caches.delete(MEDIA_CACHE); tamanhos.clear(); return; }
+  if (d && d.tipo === 'revalidar' && Array.isArray(d.urls)) {
+    e.waitUntil(revalidarLista(d.urls));
+  }
 });
 
 function isMedia(url) {
@@ -56,24 +85,30 @@ function isShell(url) {
   return false;
 }
 
-/* ---- download do arquivo inteiro, com dedupe de chamadas simultâneas ----
-   O vídeo dispara VÁRIAS requisições Range em rajada. Sem dedupe, cada
-   cache-miss começaria um download completo em paralelo. Guardamos a
-   Promise em andamento por URL e reaproveitamos. */
-const inflight = new Map();
+/* ---------- download do arquivo inteiro, sem clone e com cota tratada ---------- */
 function baixarInteiro(cache, url) {
   if (inflight.has(url)) return inflight.get(url);
   const p = (async () => {
     try {
-      // fetch por string = requisição CORS nova, SEM Range -> 200 completo
-      const resp = await fetch(url);
-      if (resp && resp.status === 200) {
-        await cache.put(url, resp.clone());
-        return resp;
+      // fetch por string = requisição nova SEM Range -> 200 completo e cacheável
+      const resp = await fetch(url, { cache: 'no-store' });
+      if (!resp || resp.status !== 200) return false;
+      const cl  = resp.headers.get('Content-Length');
+      const tag = resp.headers.get('ETag');
+      try {
+        // sem clone(): o corpo vai direto pro cache, nada é bufferizado
+        await cache.put(url, resp);
+      } catch (err) {
+        // QuotaExceededError ou falha de escrita: não deixa entrada parcial
+        try { await cache.delete(url); } catch (e) {}
+        tamanhos.delete(url);
+        return false;
       }
-      return null;
+      if (cl && !isNaN(+cl) && +cl > 0) tamanhos.set(url, +cl);
+      if (tag) etags.set(url, tag);
+      return true;
     } catch (err) {
-      return null;
+      return false;
     } finally {
       inflight.delete(url);
     }
@@ -82,29 +117,135 @@ function baixarInteiro(cache, url) {
   return p;
 }
 
-/* ---- fatia o arquivo inteiro cacheado e devolve 206 Partial Content ---- */
-async function fatiar(full, range) {
-  const buf   = await full.clone().arrayBuffer();
-  const total = buf.byteLength;
+/* ---------- tamanho total, sem carregar o arquivo na memória ---------- */
+async function tamanhoTotal(cache, url) {
+  if (tamanhos.has(url)) return tamanhos.get(url);
+  const r = await cache.match(url);
+  if (!r) return null;
+  const cl = r.headers.get('Content-Length');
+  if (cl && !isNaN(+cl) && +cl > 0) { tamanhos.set(url, +cl); return +cl; }
+  // sem Content-Length: conta por streaming (memória constante, só I/O)
+  try {
+    let n = 0;
+    const rd = r.body.getReader();
+    while (true) {
+      const { done, value } = await rd.read();
+      if (done) break;
+      n += value.byteLength;
+    }
+    if (n > 0) { tamanhos.set(url, n); return n; }
+  } catch (e) {}
+  return null;
+}
 
+/* ---------- fatiamento por STREAMING: o coração da correção ----------
+   Lê o corpo cacheado em pedaços. Pula o que está antes de `start`,
+   emite [start..end] e cancela o leitor. Pico de memória = 1 pedaço. */
+function fatiarStream(body, start, end) {
+  const reader = body.getReader();
+  let pos = 0;
+  let encerrado = false;
+  const fim = () => {
+    if (encerrado) return;
+    encerrado = true;
+    reader.cancel().catch(()=>{});
+  };
+  return new ReadableStream({
+    async pull(controller) {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) { controller.close(); return; }
+          const len = value.byteLength;
+          const ini = pos, ult = pos + len - 1;
+          pos += len;
+
+          if (ult < start) continue;                 // pedaço ainda antes da janela
+          if (ini > end) { fim(); controller.close(); return; }
+
+          const de  = Math.max(0, start - ini);
+          const ate = Math.min(len, end - ini + 1);
+          controller.enqueue(value.subarray(de, ate));
+
+          if (ult >= end) { fim(); controller.close(); return; }
+          return;   // devolve o controle; o próximo pull continua de onde parou
+        }
+      } catch (err) {
+        fim();
+        controller.error(err);
+      }
+    },
+    cancel() { fim(); }
+  });
+}
+
+function lerRange(range, total) {
   let start, end;
   const m = /bytes=(\d*)-(\d*)/.exec(range || '');
   if (m) {
     const a = m[1], b = m[2];
-    if (a === '' && b !== '') {           // sufixo: últimos N bytes
+    if (a === '' && b !== '') {                 // sufixo: últimos N bytes
       const n = parseInt(b, 10);
       start = Math.max(0, total - (isNaN(n) ? total : n));
       end   = total - 1;
     } else {
-      start = a === '' ? 0            : parseInt(a, 10);
-      end   = b === '' ? total - 1    : parseInt(b, 10);
+      start = a === '' ? 0         : parseInt(a, 10);
+      end   = b === '' ? total - 1 : parseInt(b, 10);
     }
   } else {
     start = 0; end = total - 1;
   }
   if (isNaN(start)) start = 0;
   if (isNaN(end) || end >= total) end = total - 1;
+  return { start, end };
+}
 
+async function serveMedia(req) {
+  const cache = await caches.open(MEDIA_CACHE);
+  const url   = req.url;
+  const range = req.headers.get('range');
+
+  let hit = await cache.match(url);
+
+  /* ---- ainda não temos o arquivo ---- */
+  if (!hit) {
+    const baixando = baixarInteiro(cache, url);
+
+    if (range) {
+      // ONLINE: atende esta requisição pela rede (streaming, sem buffer),
+      // enquanto o arquivo inteiro é baixado para o cache em paralelo.
+      try { return await fetch(req); }
+      catch (e) {
+        // OFFLINE e sem cache: única saída é esperar o download (que vai falhar)
+        const ok = await baixando;
+        if (!ok) return new Response('', { status: 504 });
+        hit = await cache.match(url);
+        if (!hit) return new Response('', { status: 504 });
+      }
+    } else {
+      const ok = await baixando;
+      if (!ok) {
+        try { return await fetch(req); }
+        catch (e) { return new Response('', { status: 504 }); }
+      }
+      hit = await cache.match(url);
+      if (!hit) return new Response('', { status: 504 });
+      return hit;                      // sem clone
+    }
+  }
+
+  /* ---- servindo do cache ---- */
+  if (!range) return hit;
+
+  const total = await tamanhoTotal(cache, url);
+  if (!total) {
+    // entrada inutilizável: descarta para ser rebaixada quando houver rede
+    try { await cache.delete(url); } catch (e) {}
+    tamanhos.delete(url);
+    return new Response('', { status: 504 });
+  }
+
+  const { start, end } = lerRange(range, total);
   if (start > end || start < 0 || start >= total) {
     return new Response(null, {
       status: 416,
@@ -112,82 +253,76 @@ async function fatiar(full, range) {
     });
   }
 
-  const chunk = buf.slice(start, end + 1);
+  const fresco = await cache.match(url);     // corpo novo, não consumido
+  if (!fresco || !fresco.body) return new Response('', { status: 504 });
+
   const headers = new Headers();
-  headers.set('Content-Type',   full.headers.get('Content-Type') || 'video/mp4');
+  headers.set('Content-Type',   fresco.headers.get('Content-Type') || 'video/mp4');
   headers.set('Content-Range',  'bytes ' + start + '-' + end + '/' + total);
   headers.set('Accept-Ranges',  'bytes');
-  headers.set('Content-Length', String(chunk.byteLength));
-  return new Response(chunk, { status: 206, statusText: 'Partial Content', headers });
+  headers.set('Content-Length', String(end - start + 1));
+  headers.set('Cache-Control',  'no-store');
+
+  return new Response(fatiarStream(fresco.body, start, end), {
+    status: 206, statusText: 'Partial Content', headers
+  });
 }
 
-async function serveMedia(req) {
+/* ---------- revalidação: mídia trocada no portal ----------
+   HEAD barato por arquivo. Se ETag ou tamanho mudou, apaga e rebaixa.
+   Se não há rede, falha em silêncio e o cache atual continua tocando. */
+async function revalidarLista(urls) {
   const cache = await caches.open(MEDIA_CACHE);
-  const range = req.headers.get('range');
-  const url   = req.url;
+  for (const url of urls) {
+    try {
+      const tem = await cache.match(url);
+      if (!tem) { await baixarInteiro(cache, url); continue; }
 
-  let full = await cache.match(url);
+      const h = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+      if (!h || !h.ok) continue;
 
-  if (!full) {
-    // ainda não temos o arquivo. Começa (ou reaproveita) o download inteiro
-    // pra encher o cache e funcionar offline nas próximas voltas.
-    const baixando = baixarInteiro(cache, url);
+      const tagNovo = h.headers.get('ETag');
+      const clNovo  = h.headers.get('Content-Length');
+      const tagVelho = etags.get(url) || tem.headers.get('ETag');
+      const clVelho  = tamanhos.get(url) || tem.headers.get('Content-Length');
 
-    if (range) {
-      // ONLINE: atende ESTA requisição já pela rede (repassa o Range),
-      // sem travar a primeira exibição enquanto o arquivo inteiro baixa.
-      try {
-        return await fetch(req);
-      } catch (e) {
-        // OFFLINE e sem cache: última tentativa é esperar o download.
-        full = await baixando;
-        if (!full) return new Response('', { status: 504 });
-        // se por acaso baixou, cai pro fatiamento abaixo
+      const mudouTag = tagNovo && tagVelho && tagNovo !== tagVelho;
+      const mudouCl  = clNovo && clVelho && String(clNovo) !== String(clVelho);
+
+      if (mudouTag || mudouCl) {
+        await cache.delete(url);
+        tamanhos.delete(url);
+        etags.delete(url);
+        await baixarInteiro(cache, url);
       }
-    } else {
-      // requisição sem Range (imagem ou pré-carregamento): espera cachear.
-      full = await baixando;
-      if (!full) {
-        try { return await fetch(req); }
-        catch (e) { return new Response('', { status: 504 }); }
-      }
-      return full.clone();
-    }
+    } catch (e) { /* sem rede: mantém o cache */ }
   }
-
-  // temos o arquivo inteiro cacheado
-  if (!range) return full.clone();
-  return await fatiar(full, range);
 }
 
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   const url = req.url;
 
-  if (req.method !== 'GET') return;   // POST/RPC: rede direta
+  if (req.method !== 'GET') return;           // POST/RPC: rede direta
 
-  // ---- MÍDIA: cacheia inteiro + serve Range do cache (offline real) ----
-  if (isMedia(url)) {
-    e.respondWith(serveMedia(req));
-    return;
-  }
+  if (isMedia(url)) { e.respondWith(serveMedia(req)); return; }
 
-  // ---- SHELL (player.html, sdk): NETWORK-FIRST ----
-  // tenta a rede; se vier, usa e atualiza o cache. Só usa cache se offline.
   if (isShell(url)) {
     e.respondWith((async () => {
       const cache = await caches.open(APP_CACHE);
       try {
         const resp = await fetch(req, { cache: 'no-store' });
-        if (resp && resp.ok) cache.put(req, resp.clone());
+        if (resp && resp.ok) { try { await cache.put(req, resp.clone()); } catch (e) {} }
         return resp;
       } catch (err) {
-        const hit = await cache.match(req);
+        // OFFLINE: tenta a URL exata e, se não houver, ignora a query string.
+        // Sem isso, um reload offline de player.html?code=NNNNNN dá tela branca.
+        let hit = await cache.match(req);
+        if (!hit) hit = await cache.match(req, { ignoreSearch: true });
+        if (!hit) hit = await cache.match('./player.html', { ignoreSearch: true });
         return hit || new Response('', { status: 504 });
       }
     })());
     return;
   }
-
-  // demais: rede normal
 });
