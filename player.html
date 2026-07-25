@@ -167,6 +167,33 @@ function mostrarSessaoAnterior(){
   setTimeout(()=> el.classList.remove('show'), 90000);
 }
 
+/* ---- liga/desliga o painel pelo CONTROLE REMOTO ----
+   Necessario porque em APK proprio a URL costuma ser montada pelo app,
+   sem onde acrescentar ?diag=1. Quatro toques rapidos em QUALQUER botao
+   (OK serve) dentro de 3s alternam o painel. O REGISTRO em disco roda
+   sempre, independente do painel estar visivel. */
+let toques = [];
+function alternarDiag(){
+  DIAG = !DIAG;
+  const hud = document.getElementById('hud');
+  if(DIAG){
+    hud.classList.add('show');
+    mostrarSessaoAnterior();
+    pintarHud();
+    logar('DIAG ligado pelo controle');
+  }else{
+    hud.classList.remove('show');
+    document.getElementById('prev').classList.remove('show');
+    logar('DIAG desligado');
+  }
+}
+function registrarToque(){
+  const agora = Date.now();
+  toques.push(agora);
+  toques = toques.filter(t=> agora - t < 3000);
+  if(toques.length >= 4){ toques = []; alternarDiag(); }
+}
+
 function iniciarDiag(){
   // rotaciona: o log desta sessao vira "anterior" na proxima abertura
   try{
@@ -190,13 +217,17 @@ function iniciarDiag(){
   window.addEventListener('online',  ()=> logar('REDE online'));
   window.addEventListener('offline', ()=> logar('REDE offline'));
 
+  window.addEventListener('keydown',     registrarToque);
+  window.addEventListener('pointerdown', registrarToque);
+
   if(DIAG){
     document.getElementById('hud').classList.add('show');
     mostrarSessaoAnterior();
-    setInterval(pintarHud, 2000);
   }
-  setInterval(amostrar, 60000);   // amostra de memoria a cada minuto
+  setInterval(pintarHud, 2000);    // pintarHud sai sozinho se DIAG estiver off
+  setInterval(amostrar, 60000);    // amostra de memoria a cada minuto -> disco
   amostrar();
+  logar('DIAG por controle: 4 toques rapidos em qualquer botao');
 }
 let persistOK = 'n/d';
 
