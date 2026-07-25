@@ -64,7 +64,7 @@
 
 <script>
 /* ================= CONFIG ================= */
-const PLAYER_VERSION = 'v3.0d';   // versão do player — aparece na coluna VERSÃO do painel
+const PLAYER_VERSION = 'v3.1d';   // versão do player — aparece na coluna VERSÃO do painel
 const SB_URL = 'https://wjyaxmbkdjebulosdtds.supabase.co';
 const SB_KEY = 'sb_publishable_mmTZZoQCGe24bTshASUi1w_JKnyU4sv';
 const MEDIA_BASE = SB_URL + '/storage/v1/object/public/blinplay-media/';
@@ -182,7 +182,8 @@ function pintarHud(){
     'tocando..: #'+idx+' '+(item? (item.tipo||'?')+' '+String(item.path||'').slice(-26) : '-'),
     'voltas...: '+voltas+'   trocas: '+trocas+'   erros: '+erros,
     '<b>VEREDITO: '+veredito()+'</b>',
-    'envio log: '+statusEnvio
+    'envio log: '+statusEnvio,
+    'kotlin...: '+relatoKotlin
   ];
   document.getElementById('hud').innerHTML = linhas.join('\n');
 }
@@ -233,6 +234,7 @@ function registrarToque(){
    subir no boot seguinte -- e ai a falha aparece no painel sem ninguem
    estar na frente do box. */
 let statusEnvio = 'aguardando';
+let relatoKotlin = '-';
 const FILA_KEY = 'blinplay_fila_log';
 
 function enfileirar(pacote){
@@ -290,7 +292,8 @@ async function auditarCache(){
   // modo nativo: quem sabe da midia e o Kotlin
   if(NATIVO){
     try{
-      const r = JSON.parse(window.BlinPlayNative.relatorioMidias(JSON.stringify(esperados)));
+      try{ relatoKotlin = String(window.BlinPlayNative.ultimoSync()||'-').slice(0,70); }catch(e){}
+    const r = JSON.parse(window.BlinPlayNative.relatorioMidias(JSON.stringify(esperados)));
       auditoria = { ok:r.ok||0, total:r.total||esperados.length,
                     faltando: (r.faltam? new Array(r.faltam).fill('?') : []) };
       logar('NATIVO midias '+auditoria.ok+'/'+auditoria.total+
@@ -382,8 +385,39 @@ function iniciarDiag(){
 
   // sobe o que estiver na fila: no boot, quando a rede volta, e a cada 30 min
   setTimeout(esvaziarFila, 8000);
+  // ponte nativa no boot: usa a ultima programacao salva, sem esperar o sync.
+  // Assim o Kotlin recebe a lista mesmo se a rede ou o render falharem.
+  setTimeout(()=>{
+    if(!NATIVO) return;
+    let salvos = [];
+    try{ salvos = JSON.parse(localStorage.getItem(MIDIAS_KEY)||'[]'); }catch(e){}
+    if(!salvos.length){
+      // ainda nao temos lista: tenta extrair da programacao salva
+      try{
+        const tk = token || '';
+        const sched = JSON.parse(localStorage.getItem('blinplay_sched_'+tk)||'null');
+        if(sched){
+          (sched.padrao||[]).forEach(m=> salvos.push(m.path));
+          (sched.campanhas||[]).forEach(c=> (c.itens||[]).forEach(it=> salvos.push(it.path)));
+          if(salvos.length) registrarEsperados(salvos);
+        }
+      }catch(e){}
+    }
+    if(salvos.length){
+      try{
+        window.BlinPlayNative.sincronizarMidias(JSON.stringify(salvos));
+        if(navigator.serviceWorker && navigator.serviceWorker.controller){
+          navigator.serviceWorker.controller.postMessage({ tipo:'nativo' });
+        }
+        logar('NATIVO boot sync: '+salvos.length+' midias');
+      }catch(e){ logar('NATIVO boot falhou'); }
+    }else{
+      logar('NATIVO boot: sem lista salva ainda');
+    }
+  }, 6000);
+
   setTimeout(auditarCache, 12000);          // auditoria no boot
-  setInterval(auditarCache, 30*60*1000);    // e a cada 30 min
+  setInterval(auditarCache, 60000);         // e a cada 60s
   window.addEventListener('online', ()=> setTimeout(esvaziarFila, 4000));
   setInterval(()=>{
     // enfileira um retrato periodico da sessao viva e tenta subir
@@ -708,8 +742,13 @@ async function sincronizar(primeira){
     try{ localStorage.setItem('blinplay_sched_'+token, JSON.stringify(data)); }catch(e){}
     if(data.canal && data.canal.id) CHANNEL_ID = data.canal.id;
     logar('SYNC ok itens='+((data.padrao||[]).length)+' camp='+((data.campanhas||[]).length));
-    aplicarPrograma(data, primeira);
-    precarregarMidias(data);   // manda o cache baixar tudo em background
+    // ORDEM IMPORTA: a midia vai PRIMEIRO. aplicarPrograma() chama tocar()
+    // de forma sincrona; se tocar() lancar excecao, ela sobe e o catch abaixo
+    // engoliria a chamada de precarregarMidias. Era exatamente o que acontecia.
+    try{ precarregarMidias(data); }
+    catch(e){ logar('PRECARREGAR falhou: '+String(e&&e.message||e).slice(0,70)); }
+    try{ aplicarPrograma(data, primeira); }
+    catch(e){ logar('APLICAR/TOCAR falhou: '+String(e&&e.message||e).slice(0,80)); }
   }catch(ex){
     logar('SYNC falhou: '+String((ex&&ex.message)||ex).slice(0,70));
     // sem rede: se não há nada tocando, tenta a última programação salva
