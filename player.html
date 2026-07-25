@@ -64,7 +64,7 @@
 
 <script>
 /* ================= CONFIG ================= */
-const PLAYER_VERSION = 'v2.9d';   // versão do player — aparece na coluna VERSÃO do painel
+const PLAYER_VERSION = 'v2.10d';   // versão do player — aparece na coluna VERSÃO do painel
 const SB_URL = 'https://wjyaxmbkdjebulosdtds.supabase.co';
 const SB_KEY = 'sb_publishable_mmTZZoQCGe24bTshASUi1w_JKnyU4sv';
 const MEDIA_BASE = SB_URL + '/storage/v1/object/public/blinplay-media/';
@@ -176,6 +176,8 @@ function pintarHud(){
     'cache....: '+(ultEstimate? (ultEstimate.usage/1048576).toFixed(1)+' MB de '+(ultEstimate.quota/1048576).toFixed(0)+' MB' : 'medindo...'),
     'heap.....: '+(h? h.usado+' / '+h.total+' MB  (limite '+h.limite+')' : 'n/d'),
     'playlist.: '+playlist.length+' itens, indisp='+indisponiveis.size,
+    'midias...: '+auditoria.ok+'/'+auditoria.total+' em cache'+
+      (auditoria.faltando.length? '  <b>FALTAM '+auditoria.faltando.length+'</b>' : ''),
     'tocando..: #'+idx+' '+(item? (item.tipo||'?')+' '+String(item.path||'').slice(-26) : '-'),
     'voltas...: '+voltas+'   trocas: '+trocas+'   erros: '+erros,
     '<b>VEREDITO: '+veredito()+'</b>',
@@ -265,6 +267,59 @@ async function esvaziarFila(){
   logar('ENVIO-LOG '+statusEnvio);
 }
 
+/* ---- AUDITORIA DE CACHE / DETECTOR DE EVICTION ----
+   Com persist() NEGADO o Android pode apagar a midia a qualquer momento.
+   Isso e indetectavel sem medicao: o sintoma na tela e igual ao de um
+   arquivo corrompido. Aqui guardamos a lista esperada em localStorage e,
+   a cada boot e a cada 30 min, conferimos o que REALMENTE esta no cache.
+   Se um arquivo que existia desaparece, o log diz isso com nome e hora --
+   e ai eviction deixa de ser hipotese. */
+const MIDIAS_KEY = 'blinplay_midias';
+let auditoria = { ok:0, total:0, faltando:[] };
+
+function registrarEsperados(paths){
+  try{ localStorage.setItem(MIDIAS_KEY, JSON.stringify(paths)); }catch(e){}
+}
+
+async function auditarCache(){
+  let esperados = [];
+  try{ esperados = JSON.parse(localStorage.getItem(MIDIAS_KEY)||'[]'); }catch(e){}
+  if(!esperados.length){ return; }
+  if(!('caches' in window)){ logar('AUDITORIA indisponivel (sem Cache API)'); return; }
+  try{
+    const c = await caches.open('media-v1');
+    let ok = 0, bytes = 0;
+    const faltando = [];
+    for(const path of esperados){
+      const r = await c.match(MEDIA_BASE + path);
+      if(!r){ faltando.push(String(path).slice(-26)); continue; }
+      ok++;
+      const cl = +(r.headers.get('Content-Length')||0);
+      if(cl) bytes += cl;
+    }
+    const antes = auditoria.ok;
+    auditoria = { ok, total: esperados.length, faltando };
+
+    logar('AUDITORIA cache '+ok+'/'+esperados.length+
+          ' ('+(bytes/1048576).toFixed(1)+' MB)'+
+          (faltando.length ? ' AUSENTES: '+faltando.join(' ') : ''));
+
+    // o achado que importa: estava presente antes e sumiu agora
+    if(antes > 0 && ok < antes){
+      erros++;
+      logar('*** EVICTION DETECTADA: caiu de '+antes+' para '+ok+' arquivos ***');
+      enfileirar({ sessao:'viva', motivo:'EVICTION',
+                   eventos: LOG.slice(-40) });
+      esvaziarFila();
+    }
+    if(faltando.length && !navigator.onLine){
+      logar('ATENCAO: faltam '+faltando.length+' arquivos e o box esta OFFLINE (sem recuperacao)');
+    }
+  }catch(e){
+    logar('AUDITORIA falhou: '+String(e&&e.message||e).slice(0,60));
+  }
+}
+
 function iniciarDiag(){
   // rotaciona: o log desta sessao vira "anterior" na proxima abertura
   try{
@@ -314,6 +369,8 @@ function iniciarDiag(){
 
   // sobe o que estiver na fila: no boot, quando a rede volta, e a cada 30 min
   setTimeout(esvaziarFila, 8000);
+  setTimeout(auditarCache, 12000);          // auditoria no boot
+  setInterval(auditarCache, 30*60*1000);    // e a cada 30 min
   window.addEventListener('online', ()=> setTimeout(esvaziarFila, 4000));
   setInterval(()=>{
     // enfileira um retrato periodico da sessao viva e tenta subir
@@ -608,7 +665,10 @@ function avancar(){
   const anterior = idx;
   idx = (idx + 1) % playlist.length;
   trocas++;
-  if(idx === 0 && anterior !== 0){ voltas++; logar('VOLTA #'+voltas+' concluida'); }
+  // com playlist de 1 item, idx nunca muda -> cada avanco E uma volta
+  if(playlist.length === 1 || (idx === 0 && anterior !== 0)){
+    voltas++; logar('VOLTA #'+voltas+' concluida');
+  }
   tocar();
 }
 
@@ -663,6 +723,7 @@ function precarregarMidias(data){
   (data.campanhas||[]).forEach(c=> (c.itens||[]).forEach(it=> todas.push(it.path)));
 
   const urls = todas.map(p=> MEDIA_BASE + p);
+  registrarEsperados(todas);      // lista de referencia para a auditoria
 
   // 1) baixa o que ainda não está em cache (o SW intercepta e guarda)
   urls.forEach(url=> fetch(url, { mode:'no-cors' }).catch(()=>{}));
