@@ -64,7 +64,7 @@
 
 <script>
 /* ================= CONFIG ================= */
-const PLAYER_VERSION = 'v3.2d';   // versão do player — aparece na coluna VERSÃO do painel
+const PLAYER_VERSION = 'v3.3d';   // versão do player — aparece na coluna VERSÃO do painel
 const SB_URL = 'https://wjyaxmbkdjebulosdtds.supabase.co';
 const SB_KEY = 'sb_publishable_mmTZZoQCGe24bTshASUi1w_JKnyU4sv';
 const MEDIA_BASE = SB_URL + '/storage/v1/object/public/blinplay-media/';
@@ -431,6 +431,16 @@ function iniciarDiag(){
 
   setTimeout(auditarCache, 12000);          // auditoria no boot
   setInterval(auditarCache, 60000);         // e a cada 60s
+
+  // recuperacao automatica: falha transitoria nao pode barrar midia para sempre
+  setInterval(()=>{
+    if(indisponiveis.size){
+      logar('RECUPERACAO: liberando '+indisponiveis.size+' item(ns) indisponivel(is)');
+      indisponiveis.clear();
+      semMidiaAvisado = false;
+      if(playlist.length){ idx = 0; tocar(); }
+    }
+  }, 10*60*1000);
   window.addEventListener('online', ()=> setTimeout(esvaziarFila, 4000));
   setInterval(()=>{
     // enfileira um retrato periodico da sessao viva e tenta subir
@@ -441,10 +451,21 @@ function iniciarDiag(){
   }, 30*60*1000);
 }
 let persistOK = 'n/d';
-/* armazenamento nativo disponivel? (APK BlinPlay com MediaStore) */
+/* Armazenamento nativo: DESLIGADO por padrao.
+   A ponte existir nao basta — a interceptacao de midia pela WebView nao
+   entregou bytes tocaveis no box de teste, e um canal de 1 item nao tem
+   para onde pular quando a midia falha. Fica atras de opt-in explicito
+   (?nativo=1 na URL, ou a chave blinplay_nativo no localStorage) ate a
+   entrega de bytes estar validada. Sem opt-in, o Service Worker serve a
+   midia — caminho que ja esta corrigido e medido. */
 const NATIVO = (function(){
-  try{ return !!(window.BlinPlayNative && window.BlinPlayNative.nativo()); }
-  catch(e){ return false; }
+  try{
+    if(!(window.BlinPlayNative && window.BlinPlayNative.nativo())) return false;
+    const q = new URLSearchParams(location.search).get('nativo') === '1';
+    let ls = false;
+    try{ ls = localStorage.getItem('blinplay_nativo') === '1'; }catch(e){}
+    return q || ls;
+  }catch(e){ return false; }
 })();
 
 /* ================= ESTADO ================= */
@@ -563,11 +584,21 @@ function liberarMidia(node){
 function marcarIndisponivel(path){
   if(!path) return;
   if(!indisponiveis.has(path)){ erros++; logar('MIDIA-FALHOU '+String(path).slice(-40)); }
+
+  /* NUNCA sacrificar o ultimo item. Barrar a unica midia do canal deixa a
+     tela em estado de espera permanente — pior do que insistir numa midia
+     problematica. Com 1 item, apenas registramos e tentamos de novo. */
+  if(playlist.length <= 1){
+    logar('MIDIA-FALHOU no unico item: repetindo em vez de barrar');
+    return;
+  }
+
   indisponiveis.add(path);
   const restantes = playlist.filter(x=> !indisponiveis.has(x.path));
-  if(restantes.length === 0 && !semMidiaAvisado){
-    semMidiaAvisado = true;
-    showMsg('Aguardando mídia do canal.<br>Verifique a programação no painel BlinPlay.', true);
+  if(restantes.length === 0){
+    // todos falharam: libera todos e recomeca, em vez de morrer na tela
+    logar('TODOS indisponiveis: liberando para nova tentativa');
+    indisponiveis.clear();
   }
 }
 
