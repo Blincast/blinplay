@@ -64,7 +64,7 @@
 
 <script>
 /* ================= CONFIG ================= */
-const PLAYER_VERSION = 'v3.1d';   // versão do player — aparece na coluna VERSÃO do painel
+const PLAYER_VERSION = 'v3.2d';   // versão do player — aparece na coluna VERSÃO do painel
 const SB_URL = 'https://wjyaxmbkdjebulosdtds.supabase.co';
 const SB_KEY = 'sb_publishable_mmTZZoQCGe24bTshASUi1w_JKnyU4sv';
 const MEDIA_BASE = SB_URL + '/storage/v1/object/public/blinplay-media/';
@@ -291,14 +291,27 @@ async function auditarCache(){
 
   // modo nativo: quem sabe da midia e o Kotlin
   if(NATIVO){
-    try{
-      try{ relatoKotlin = String(window.BlinPlayNative.ultimoSync()||'-').slice(0,70); }catch(e){}
-    const r = JSON.parse(window.BlinPlayNative.relatorioMidias(JSON.stringify(esperados)));
-      auditoria = { ok:r.ok||0, total:r.total||esperados.length,
-                    faltando: (r.faltam? new Array(r.faltam).fill('?') : []) };
-      logar('NATIVO midias '+auditoria.ok+'/'+auditoria.total+
-            ' ('+(r.mb||0)+' MB, livre '+(r.livreMb||'?')+' MB)');
-    }catch(e){ logar('NATIVO relatorio falhou'); }
+    let bruto = '';
+    try{ relatoKotlin = String(window.BlinPlayNative.ultimoSync()||'-').slice(0,70); }catch(e){}
+    try{ bruto = String(window.BlinPlayNative.relatorioMidias(JSON.stringify(esperados))||''); }
+    catch(e){ logar('NATIVO ponte falhou: '+String(e&&e.message||e).slice(0,50)); return; }
+
+    /* Leitura TOLERANTE: nao usa JSON.parse. Um separador decimal errado
+       vindo do locale do aparelho ("mb":42,0) gerava JSON invalido e cegava
+       a auditoria inteira. Agora cada numero e extraido isoladamente. */
+    const num = (chave)=>{
+      const m = new RegExp('"'+chave+'"\\s*:\\s*(-?[0-9]+)').exec(bruto);
+      return m ? parseInt(m[1], 10) : null;
+    };
+    const ok = num('ok'), total = num('total'), faltam = num('faltam'), mb = num('mb');
+
+    if(ok === null || total === null){
+      logar('NATIVO relatorio ilegivel: '+bruto.slice(0,80));
+      return;
+    }
+    auditoria = { ok: ok, total: total || esperados.length,
+                  faltando: (faltam ? new Array(faltam).fill('?') : []) };
+    logar('NATIVO midias '+auditoria.ok+'/'+auditoria.total+' ('+(mb===null?'?':mb)+' MB)');
     return;
   }
   if(!('caches' in window)){ logar('AUDITORIA indisponivel (sem Cache API)'); return; }
