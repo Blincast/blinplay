@@ -602,7 +602,10 @@ const VIEWS = {
           <td><span class="stat ${on?'on':'off'}"><span class="dot ${on?'on':'off'}"></span>${on?'Online':'Offline'}</span></td>
           <td style="color:var(--mut)">${visto}</td>
           <td style="color:var(--mut)">${c.player_version||'—'}</td>
-          <td style="white-space:nowrap"><button class="mini" onclick="pedirRefresh('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}')">⟳ Atualizar tela</button></td>
+          <td style="white-space:nowrap">
+            <button class="mini" onclick="verTela('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}')">◱ Ver tela</button>
+            <button class="mini" onclick="pedirRefresh('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}')">⟳ Atualizar tela</button>
+          </td>
         </tr>`;
       }).join('');
     }
@@ -1551,6 +1554,91 @@ async function pedirRefresh(channelId, nomeCanal){
   const { error } = await sb.rpc('pedir_refresh', { p_channel: channelId });
   if(error){ alert('Erro: '+error.message); return; }
   alert('Comando enviado! Se o box estiver online, a tela recarrega em instantes.');
+}
+
+/* ---- Ver a tela do box (miniatura sob demanda) ----------------------
+   Diferente de "Ver player ao vivo": aquele abre uma SEGUNDA reproducao
+   aqui no navegador, entao mostra o que DEVERIA estar passando. Este
+   pede ao box um quadro do que ele esta realmente renderizando — e por
+   isso revela placeholder, congelamento e midia velha em cache.
+
+   Fluxo: mostra na hora a ultima captura conhecida, pede uma nova
+   (pedir_snap), e busca a resposta (ler_snap) por ate 12s. Se o box nao
+   responder, isso ja e diagnostico: travado ou sem rede.
+   Exclusivo do painel interno — pedir_snap exige superadmin. */
+let _snapTimer=null;
+
+function fecharSnap(){ clearInterval(_snapTimer); fecharModal(); }
+
+async function verTela(channelId, nomeCanal){
+  clearInterval(_snapTimer);
+  const nomeEsc = String(nomeCanal||'').replace(/'/g,"\\'");
+  abrirModal(
+    '<h3>Tela do box</h3>'+
+    '<div class="fsub">'+ (nomeCanal||'') +'</div>'+
+    '<div id="snapWrap" style="margin:12px 0;min-height:170px;display:flex;align-items:center;'+
+      'justify-content:center;background:#000;border-radius:10px;overflow:hidden">'+
+      '<div style="color:#8a8a92;font-size:12.5px;padding:26px;text-align:center">'+
+      'Solicitando quadro ao box…</div></div>'+
+    '<div id="snapInfo" style="color:var(--mut);font-size:12px;min-height:34px;line-height:1.5"></div>'+
+    '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">'+
+      '<button class="ghost" onclick="fecharSnap()">Fechar</button>'+
+      '<button class="ghost" onclick="verTela(\''+channelId+'\',\''+nomeEsc+'\')">Nova captura</button>'+
+    '</div>'
+  );
+
+  const pinta = (r, rotulo)=>{
+    if(!r || !r.snap_data) return false;
+    const w = document.getElementById('snapWrap');
+    const i = document.getElementById('snapInfo');
+    if(!w || !i) return false;
+    w.innerHTML = '<img src="data:image/jpeg;base64,'+r.snap_data+'" style="width:100%;display:block">';
+    let txt = rotulo;
+    try{ txt += ' · '+new Date(r.snap_em).toLocaleString('pt-BR'); }catch(e){}
+    if(r.snap_item) txt += '<br>Na tela: '+r.snap_item;
+    i.innerHTML = txt;
+    return true;
+  };
+
+  // ultima captura conhecida, imediatamente
+  let anterior=null;
+  try{
+    const { data } = await sb.rpc('ler_snap', { p_canal: channelId });
+    anterior = (data && data[0]) || null;
+    if(anterior && anterior.snap_data) pinta(anterior, 'Última captura');
+  }catch(e){}
+
+  // pede um quadro novo
+  const { error } = await sb.rpc('pedir_snap', { p_canal: channelId });
+  if(error){
+    const i=document.getElementById('snapInfo');
+    if(i) i.textContent = 'Erro ao solicitar: '+error.message;
+    return;
+  }
+
+  const antes = (anterior && anterior.snap_em) ? new Date(anterior.snap_em).getTime() : 0;
+  let n=0;
+  _snapTimer = setInterval(async ()=>{
+    n++;
+    try{
+      const { data } = await sb.rpc('ler_snap', { p_canal: channelId });
+      const r = (data && data[0]) || null;
+      if(r && r.snap_em && new Date(r.snap_em).getTime() > antes){
+        clearInterval(_snapTimer);
+        pinta(r, 'Capturado agora');
+        return;
+      }
+    }catch(e){}
+    if(n>=8){
+      clearInterval(_snapTimer);
+      const i=document.getElementById('snapInfo');
+      if(i){
+        i.innerHTML = (anterior && anterior.snap_data)
+          ? 'O box não respondeu ao pedido. A imagem acima é a última captura conhecida.'
+          : 'O box não respondeu ao pedido — provavelmente travado ou sem rede.';
+      }
+    }
+  }, 1500);
 }
 
 async function novaMidia(){
