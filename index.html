@@ -581,7 +581,7 @@ const VIEWS = {
     const hoje=new Date().toISOString().slice(0,10);
     const [accsR, chsR, campsR] = await Promise.all([
       sb.from('accounts').select('id,plano').eq('ativo',true),
-      sb.from('channels').select('id,nome,last_seen_at,player_version,account_id,accounts(nome)').eq('ativo',true).order('created_at'),
+      sb.from('channels').select('id,nome,last_seen_at,player_version,account_id,rustdesk_id,accounts(nome)').eq('ativo',true).order('created_at'),
       sb.from('campaigns').select('id,nome,data_inicio,data_fim,ativo,accounts(nome)')
     ]);
     const accs=accsR.data||[], chs=chsR.data||[], camps=campsR.data||[];
@@ -604,6 +604,7 @@ const VIEWS = {
           <td style="color:var(--mut)">${c.player_version||'—'}</td>
           <td style="white-space:nowrap">
             <button class="mini" onclick="verTela('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}')">◱ Ver tela</button>
+            <button class="mini" onclick="acessoRemoto('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}')" title="${c.rustdesk_id?'RustDesk '+c.rustdesk_id:'RustDesk não configurado'}">⧉ Remoto${c.rustdesk_id?'':' <span style="opacity:.5">·</span>'}</button>
             <button class="mini" onclick="pedirRefresh('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}')">⟳ Atualizar tela</button>
           </td>
         </tr>`;
@@ -1616,29 +1617,101 @@ async function verTela(channelId, nomeCanal){
     return;
   }
 
-  const antes = (anterior && anterior.snap_em) ? new Date(anterior.snap_em).getTime() : 0;
-  let n=0;
+  /* ACOMPANHAMENTO CONTINUO enquanto o modal esta aberto.
+     Nao e video: e um quadro novo a cada ~4s. Suficiente para ver o
+     rodizio andando e confirmar que a tela nao esta congelada, sem
+     colocar encoder rodando no box — que seria ir na direcao oposta
+     do problema de recurso que a gente acabou de corrigir. */
+  let ultimoMostrado = (anterior && anterior.snap_em) ? new Date(anterior.snap_em).getTime() : 0;
+  let tick = 0, semResposta = 0;
+
   _snapTimer = setInterval(async ()=>{
-    n++;
+    tick++;
+
+    // pede um quadro novo a cada 2 ticks (4s)
+    if(tick % 2 === 0){
+      try{ await sb.rpc('pedir_snap', { p_canal: channelId }); }catch(e){}
+    }
+
     try{
       const { data } = await sb.rpc('ler_snap', { p_canal: channelId });
       const r = (data && data[0]) || null;
-      if(r && r.snap_em && new Date(r.snap_em).getTime() > antes){
-        clearInterval(_snapTimer);
-        pinta(r, 'Capturado agora');
+      const t = (r && r.snap_em) ? new Date(r.snap_em).getTime() : 0;
+      if(r && t > ultimoMostrado){
+        ultimoMostrado = t;
+        semResposta = 0;
+        pinta(r, 'Ao vivo · atualiza a cada 4s');
         return;
       }
     }catch(e){}
-    if(n>=8){
-      clearInterval(_snapTimer);
+
+    semResposta++;
+    if(semResposta === 6){
       const i=document.getElementById('snapInfo');
       if(i){
-        i.innerHTML = (anterior && anterior.snap_data)
-          ? 'O box não respondeu ao pedido. A imagem acima é a última captura conhecida.'
-          : 'O box não respondeu ao pedido — provavelmente travado ou sem rede.';
+        i.innerHTML = (ultimoMostrado
+          ? 'Sem resposta há alguns segundos — a imagem acima é a última recebida.'
+          : 'O box não respondeu — provavelmente travado ou sem rede.');
       }
     }
-  }, 1500);
+  }, 2000);
+}
+
+/* ---- Acesso remoto por RustDesk -------------------------------------
+   O botao monta rustdesk://connection/new/<ID>?password=<SENHA>, que abre
+   o cliente instalado na maquina. Credenciais nunca saem por RLS: vem de
+   ler_rustdesk, que exige superadmin. */
+async function acessoRemoto(channelId, nomeCanal){
+  clearInterval(_snapTimer);
+  let cred = { rustdesk_id:'', rustdesk_senha:'' };
+  try{
+    const { data } = await sb.rpc('ler_rustdesk', { p_canal: channelId });
+    if(data && data[0]) cred = data[0];
+  }catch(e){}
+
+  const idv = (cred.rustdesk_id||''), sev = (cred.rustdesk_senha||'');
+  abrirModal(
+    '<h3>Acesso remoto</h3>'+
+    '<div class="fsub">'+(nomeCanal||'')+' · RustDesk</div>'+
+    '<div class="fld"><label>ID do RustDesk</label>'+
+      '<input id="rd_id" placeholder="ex: 1234567890" value="'+idv.replace(/"/g,'&quot;')+'"></div>'+
+    '<div class="fld"><label>Senha de acesso permanente</label>'+
+      '<input id="rd_pw" type="text" placeholder="senha configurada no box" value="'+sev.replace(/"/g,'&quot;')+'"></div>'+
+    '<div style="color:var(--mut);font-size:11.5px;line-height:1.5;margin-top:4px">'+
+      'Requer o cliente RustDesk instalado nesta máquina. A senha é credencial de acesso '+
+      'irrestrito ao equipamento — visível apenas neste painel.</div>'+
+    '<div id="rd_msg" style="color:var(--mut);font-size:12px;min-height:18px;margin-top:8px"></div>'+
+    '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">'+
+      '<button class="ghost" onclick="fecharModal()">Fechar</button>'+
+      '<button class="ghost" onclick="salvarRemoto(\''+channelId+'\')">Salvar</button>'+
+      '<button class="ghost" onclick="conectarRemoto()">Conectar</button>'+
+    '</div>'
+  );
+}
+
+async function salvarRemoto(channelId){
+  const id = (document.getElementById('rd_id').value||'').trim();
+  const pw = (document.getElementById('rd_pw').value||'').trim();
+  const m  = document.getElementById('rd_msg');
+  try{
+    const { error } = await sb.rpc('salvar_rustdesk', { p_canal: channelId, p_id: id, p_senha: pw });
+    if(error) throw error;
+    if(m) m.textContent = 'Salvo.';
+    if(CUR==='overview') render();
+  }catch(e){
+    if(m) m.textContent = 'Erro ao salvar: '+((e&&e.message)||e);
+  }
+}
+
+function conectarRemoto(){
+  const id = (document.getElementById('rd_id').value||'').trim();
+  const pw = (document.getElementById('rd_pw').value||'').trim();
+  const m  = document.getElementById('rd_msg');
+  if(!id){ if(m) m.textContent = 'Informe o ID do RustDesk.'; return; }
+  const uri = 'rustdesk://connection/new/'+encodeURIComponent(id)
+            + (pw ? '?password='+encodeURIComponent(pw) : '');
+  if(m) m.textContent = 'Abrindo o RustDesk…';
+  window.location.href = uri;
 }
 
 async function novaMidia(){
