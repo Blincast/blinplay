@@ -64,7 +64,7 @@
 
 <script>
 /* ================= CONFIG ================= */
-const PLAYER_VERSION = 'v3.3d';   // versão do player — aparece na coluna VERSÃO do painel
+const PLAYER_VERSION = 'v3.4d';   // versão do player — aparece na coluna VERSÃO do painel
 const SB_URL = 'https://wjyaxmbkdjebulosdtds.supabase.co';
 const SB_KEY = 'sb_publishable_mmTZZoQCGe24bTshASUi1w_JKnyU4sv';
 const MEDIA_BASE = SB_URL + '/storage/v1/object/public/blinplay-media/';
@@ -650,6 +650,17 @@ function tocar(){
     v.preload = 'auto';
     slide.dataset.video = '1';
 
+    /* CANAL COM UM UNICO VIDEO -> LOOP NATIVO.
+       Sem isso, cada volta destruia e recriava o elemento, e o intervalo
+       entre criar e ter o primeiro quadro e exatamente onde o WebView
+       desenha o placeholder claro. Com loop nativo nao existe troca:
+       nao ha flash, e desaparecem ~600 criacoes de <video> por dia. */
+    const loopUnico = (playlist.length === 1);
+    if(loopUnico){
+      v.loop = true;
+      logar('LOOP NATIVO ativado (canal de 1 video)');
+    }
+
     // ---------------------------------------------------------------
     // AVANÇO DE VÍDEO — robusto para WebView de Android TV (Fully Kiosk)
     //
@@ -686,6 +697,7 @@ function tocar(){
     // watchdog de "duração real + 5s" só como proteção contra travamento.
     const tentaArmarPorDuracao = ()=>{
       if(g !== geracao) return;
+      if(loopUnico) return;     // em loop nativo nunca avancamos: recriar = flash
       if(isFinite(v.duration) && v.duration > 0){
         cancelaWatchdog();
         watchdog = setTimeout(()=>{ if(g !== geracao) return; avancar(); }, (v.duration * 1000) + 5000);
@@ -737,21 +749,57 @@ function tocar(){
   }
 
   stage.appendChild(slide);
-  requestAnimationFrame(()=> slide.classList.add('on'));
+
+  /* REVELACAO CONDICIONADA AO PRIMEIRO QUADRO.
+     Antes: o slide era revelado no frame seguinte, com o <video> ainda vazio
+     -> o WebView pintava o placeholder nativo dele (retangulo claro com botao
+     de play) por 1 a 2 segundos a cada troca.
+     Agora: o slide nasce invisivel e decodifica em segundo plano. Enquanto
+     nao houver imagem, o slide ANTERIOR continua na tela. A troca fica
+     limpa, sem branco nenhum. */
+  const revelar = ()=>{
+    if(g !== geracao) return;
+    if(slide.classList.contains('on')) return;
+    slide.classList.add('on');
+    // limpeza somente DEPOIS da transicao de 0.6s terminar
+    const tLimpa = setTimeout(()=>{
+      while(stage.children.length > 2){
+        const velho = stage.firstChild;
+        liberarMidia(velho);
+        stage.removeChild(velho);
+      }
+    }, 700);
+    window.__vidTimers.push({ tipo:'t', id: tLimpa });
+  };
+
+  if(slide.dataset.video === '1'){
+    const v0 = slide.querySelector('video');
+    if(v0.readyState >= 2){ revelar(); }
+    else {
+      v0.addEventListener('loadeddata', revelar, { once:true });
+      v0.addEventListener('playing',    revelar, { once:true });
+      // rede de seguranca: nunca deixar a tela presa no slide anterior
+      const tRev = setTimeout(revelar, 4000);
+      window.__vidTimers.push({ tipo:'t', id: tRev });
+    }
+  } else {
+    const im0 = slide.querySelector('img');
+    if(im0 && im0.complete){ revelar(); }
+    else if(im0){
+      im0.addEventListener('load',  revelar, { once:true });
+      im0.addEventListener('error', revelar, { once:true });
+      const tRev = setTimeout(revelar, 3000);
+      window.__vidTimers.push({ tipo:'t', id: tRev });
+    } else { revelar(); }
+  }
 
   // selo de campanha
   const flag = document.getElementById('flag');
   if(item.camp){ flag.textContent = '● ' + (item.campNome||'Campanha'); flag.classList.add('show'); }
   else flag.classList.remove('show');
 
-  // limpa slides antigos (mantém só os 2 últimos pra transição suave).
-  // liberarMidia() ANTES de remover: sem isso o decoder e os buffers do
-  // vídeo que saiu ficam presos até o GC passar — inaceitável em 24/7.
-  while(stage.children.length > 2){
-    const velho = stage.firstChild;
-    liberarMidia(velho);
-    stage.removeChild(velho);
-  }
+  // (a limpeza dos slides antigos migrou para dentro de revelar(), para nao
+  //  remover o slide visivel antes de o novo ter imagem)
 }
 
 function avancar(){
