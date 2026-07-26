@@ -64,7 +64,7 @@
 
 <script>
 /* ================= CONFIG ================= */
-const PLAYER_VERSION = 'v3.5d';   // versão do player — aparece na coluna VERSÃO do painel
+const PLAYER_VERSION = 'v3.7d';   // versão do player — aparece na coluna VERSÃO do painel
 const SB_URL = 'https://wjyaxmbkdjebulosdtds.supabase.co';
 const SB_KEY = 'sb_publishable_mmTZZoQCGe24bTshASUi1w_JKnyU4sv';
 const MEDIA_BASE = SB_URL + '/storage/v1/object/public/blinplay-media/';
@@ -189,6 +189,9 @@ function pintarHud(){
   document.getElementById('hud').innerHTML = linhas.join('\n');
 }
 
+/* A tela cheia com o log da sessao anterior foi desativada: ficava 90s na
+   frente do conteudo. O registro continua sendo gravado em disco e enviado
+   ao Supabase. Para reativar em campo, chame mostrarSessaoAnterior(). */
 function mostrarSessaoAnterior(){
   let prev=null;
   try{ prev = JSON.parse(localStorage.getItem(LOG_PREV)||'null'); }catch(e){}
@@ -212,7 +215,6 @@ function alternarDiag(){
   const hud = document.getElementById('hud');
   if(DIAG){
     hud.classList.add('show');
-    mostrarSessaoAnterior();
     pintarHud();
     logar('DIAG ligado pelo controle');
   }else{
@@ -264,7 +266,11 @@ async function esvaziarFila(){
         p_eventos: pac.eventos
       });
       if(error) throw error;
-    }catch(e){ restantes.push(pac); }
+    }catch(e){
+      const cod = (e && (e.code || e.status)) || '?';
+      logar('LOG RPC erro cod='+cod+' msg='+String((e&&e.message)||e).slice(0,110));
+      restantes.push(pac);
+    }
   }
   try{ localStorage.setItem(FILA_KEY, JSON.stringify(restantes)); }catch(e){}
   statusEnvio = restantes.length ? 'pendente '+restantes.length : 'enviado ok';
@@ -428,8 +434,13 @@ async function enviarSnap(motivo){
     logar('SNAP enviado '+motivo+' '+r.kb+' KB');
     return true;
   }catch(e){
-    snapEstado = 'envio falhou';
-    logar('SNAP envio falhou: '+String((e&&e.message)||e).slice(0,60));
+    // Detalhar de verdade: code + message + hint. "envio falhou" sozinho
+    // nao diz se e 404 de schema cache, permissao, tamanho ou rede.
+    const cod = (e && (e.code || e.status)) || '?';
+    const msg = String((e && (e.message || e.error_description)) || e || '?');
+    const hint = (e && (e.hint || e.details)) ? ' | '+String(e.hint||e.details) : '';
+    snapEstado = 'envio falhou ['+cod+'] '+msg.slice(0,60);
+    logar('SNAP RPC erro cod='+cod+' msg='+msg.slice(0,120)+hint.slice(0,80));
     return false;
   }
 }
@@ -474,7 +485,6 @@ function iniciarDiag(){
 
   if(DIAG){
     document.getElementById('hud').classList.add('show');
-    mostrarSessaoAnterior();
   }
   setInterval(pintarHud, 2000);    // pintarHud sai sozinho se DIAG estiver off
   setInterval(amostrar, 60000);    // amostra de memoria a cada minuto -> disco
@@ -516,7 +526,7 @@ function iniciarDiag(){
 
   // AUTOTESTE: uma captura no boot. Alem de dar ao painel uma primeira
   // imagem, revela em UM restart se este WebView permite capturar quadro.
-  setTimeout(()=> enviarSnap('autoteste'), 25000);
+  setTimeout(()=> enviarSnap('autoteste'), 12000);
 
   setTimeout(auditarCache, 12000);          // auditoria no boot
   setInterval(auditarCache, 60000);         // e a cada 60s
