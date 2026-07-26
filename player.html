@@ -64,7 +64,7 @@
 
 <script>
 /* ================= CONFIG ================= */
-const PLAYER_VERSION = 'v3.4d';   // versão do player — aparece na coluna VERSÃO do painel
+const PLAYER_VERSION = 'v3.5d';   // versão do player — aparece na coluna VERSÃO do painel
 const SB_URL = 'https://wjyaxmbkdjebulosdtds.supabase.co';
 const SB_KEY = 'sb_publishable_mmTZZoQCGe24bTshASUi1w_JKnyU4sv';
 const MEDIA_BASE = SB_URL + '/storage/v1/object/public/blinplay-media/';
@@ -183,7 +183,8 @@ function pintarHud(){
     'voltas...: '+voltas+'   trocas: '+trocas+'   erros: '+erros,
     '<b>VEREDITO: '+veredito()+'</b>',
     'envio log: '+statusEnvio,
-    'kotlin...: '+relatoKotlin
+    'kotlin...: '+relatoKotlin,
+    'captura..: '+snapEstado
   ];
   document.getElementById('hud').innerHTML = linhas.join('\n');
 }
@@ -349,6 +350,90 @@ async function auditarCache(){
   }
 }
 
+/* ================= CAPTURA DE QUADRO (miniatura sob demanda) =========
+   O painel escreve snap_pedido_em; o box recebe por Realtime, desenha o
+   quadro VISIVEL num canvas e envia como JPEG base64.
+
+   Por que isso e diferente de "ver player ao vivo": aquele abre uma
+   segunda reproducao no navegador de quem olha. Este e o quadro que o
+   BOX esta realmente renderizando — a unica forma de ver placeholder,
+   congelamento ou midia velha.
+
+   Riscos reais, tratados aqui: canvas contaminado por falta de CORS, e
+   quadro preto quando o WebView decodifica por hardware e nao expoe os
+   pixels. Os dois sao detectados e reportados em vez de falhar calado. */
+let snapUltimoPedido = 0;
+let snapEstado = 'nao testado';
+
+function elementoVisivel(){
+  const stage = document.getElementById('stage');
+  if(!stage) return null;
+  const on = stage.querySelector('.slide.on') || stage.lastElementChild;
+  if(!on || !on.querySelector) return null;
+  return on.querySelector('video') || on.querySelector('img');
+}
+
+function capturarQuadro(){
+  const el = elementoVisivel();
+  if(!el) return { erro:'sem elemento visivel' };
+
+  const lw = el.videoWidth  || el.naturalWidth  || 0;
+  const lh = el.videoHeight || el.naturalHeight || 0;
+  if(!lw || !lh) return { erro:'sem dimensoes (midia nao carregou)' };
+
+  const larg = 640;
+  const alt  = Math.max(90, Math.round(larg * (lh/lw)));
+  const c = document.createElement('canvas');
+  c.width = larg; c.height = alt;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#000'; ctx.fillRect(0,0,larg,alt);
+
+  try{ ctx.drawImage(el, 0, 0, larg, alt); }
+  catch(e){ return { erro:'drawImage '+((e&&e.name)||'?') }; }
+
+  // quadro preto => caminho de decodificacao por hardware nao expoe pixels
+  try{
+    const px = ctx.getImageData(0,0,larg,alt).data;
+    let soma=0, n=0;
+    for(let i=0;i<px.length;i+=4*499){ soma += px[i]+px[i+1]+px[i+2]; n+=3; }
+    if(n && (soma/n) < 3) return { erro:'quadro preto (decodificacao por hardware)' };
+  }catch(e){ return { erro:'canvas contaminado: '+((e&&e.name)||'?') }; }
+
+  let url;
+  try{ url = c.toDataURL('image/jpeg', 0.55); }
+  catch(e){ return { erro:'toDataURL '+((e&&e.name)||'?') }; }
+
+  const b64 = (url.split(',')[1] || '');
+  if(b64.length < 500) return { erro:'imagem vazia' };
+  return { b64: b64, kb: Math.round(b64.length/1024) };
+}
+
+async function enviarSnap(motivo){
+  const r = capturarQuadro();
+  if(r.erro){
+    snapEstado = 'FALHA: ' + r.erro;
+    logar('SNAP '+motivo+' '+snapEstado);
+    return false;
+  }
+  if(!sb || !token){ snapEstado = 'sem token'; return false; }
+  try{
+    const item = playlist[idx];
+    const { error } = await sb.rpc('gravar_snap', {
+      p_token: token,
+      p_jpeg:  r.b64,
+      p_item:  item ? String(item.path||'').slice(-60) : null
+    });
+    if(error) throw error;
+    snapEstado = 'ok ('+r.kb+' KB)';
+    logar('SNAP enviado '+motivo+' '+r.kb+' KB');
+    return true;
+  }catch(e){
+    snapEstado = 'envio falhou';
+    logar('SNAP envio falhou: '+String((e&&e.message)||e).slice(0,60));
+    return false;
+  }
+}
+
 function iniciarDiag(){
   // rotaciona: o log desta sessao vira "anterior" na proxima abertura
   try{
@@ -428,6 +513,10 @@ function iniciarDiag(){
       logar('NATIVO boot: sem lista salva ainda');
     }
   }, 6000);
+
+  // AUTOTESTE: uma captura no boot. Alem de dar ao painel uma primeira
+  // imagem, revela em UM restart se este WebView permite capturar quadro.
+  setTimeout(()=> enviarSnap('autoteste'), 25000);
 
   setTimeout(auditarCache, 12000);          // auditoria no boot
   setInterval(auditarCache, 60000);         // e a cada 60s
@@ -930,6 +1019,15 @@ function ligarRealtime(){
   const aoMudarCanal = (payload)=>{
     const novo = payload && payload.new ? payload.new : null;
     // se é o NOSSO canal e veio um pedido de refresh recente, recarrega a página
+    // pedido de miniatura da tela (mesmo padrao do refresh_pedido_em)
+    if(novo && CHANNEL_ID && novo.id===CHANNEL_ID && novo.snap_pedido_em){
+      const q = new Date(novo.snap_pedido_em).getTime();
+      if(q > snapUltimoPedido && (Date.now() - q) < 120000){
+        snapUltimoPedido = q;
+        setTimeout(()=> enviarSnap('pedido'), 200);
+      }
+    }
+
     if(novo && CHANNEL_ID && novo.id===CHANNEL_ID && novo.refresh_pedido_em){
       const quando = new Date(novo.refresh_pedido_em).getTime();
       if(Date.now() - quando < 60000){   // pedido dos últimos 60s
