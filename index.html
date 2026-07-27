@@ -576,6 +576,28 @@ async function render(){
 function topbar(title,sub,actions=''){return `<div class="top"><div><h1>${title}</h1><div class="sub">${sub}</div></div><div class="top-actions">${actions}</div></div>`;}
 function playerBtn(){return `<button class="ghost" onclick="openPlayer()">▷ Ver player ao vivo</button>`;}
 
+/* CONSULTA RESILIENTE DOS CANAIS.
+   As colunas tags, autorizado, rustdesk_id e ultimo_ip só existem depois de
+   rodar os SQL correspondentes. Pedir uma coluna inexistente faz o
+   PostgREST rejeitar a consulta INTEIRA — e a tabela de canais aparecia
+   vazia, como se não houvesse canal nenhum. Aqui tentamos o conjunto
+   completo e caímos no básico se alguma faltar, registrando o que falta. */
+let COLS_EXTRAS = null;   // null = ainda não sabemos
+
+async function buscarCanaisOverview(){
+  const COMPLETO = 'id,nome,last_seen_at,player_version,account_id,rustdesk_id,'
+                 + 'tags,autorizado,ultimo_ip,storage_livre,storage_total,accounts(nome)';
+  const BASICO   = 'id,nome,last_seen_at,player_version,account_id,storage_livre,accounts(nome)';
+
+  if(COLS_EXTRAS !== false){
+    const r = await sb.from('channels').select(COMPLETO).eq('ativo',true).order('created_at');
+    if(!r.error){ COLS_EXTRAS = true; return r; }
+    COLS_EXTRAS = false;
+    console.warn('[BlinPlay] colunas opcionais ausentes, usando consulta básica:', r.error.message);
+  }
+  return await sb.from('channels').select(BASICO).eq('ativo',true).order('created_at');
+}
+
 const VIEWS = {
   /* ===== ADMIN ===== */
 
@@ -583,10 +605,20 @@ const VIEWS = {
      Existe separado de Estações & Canais porque a pergunta é outra —
      aqui não interessa programação, interessa patrimônio e localização. */
   async dispositivos(){
-    const { data: chs, error } = await sb.from('channels')
+    // mesma proteção: se o SQL de dispositivos ainda não foi rodado, avisa em
+    // vez de mostrar tela vazia sem explicação
+    let { data: chs, error } = await sb.from('channels')
       .select('id,nome,codigo_curto,mac,observacao,ultimo_ip,storage_livre,storage_total,last_seen_at,player_version,ativo,accounts(nome,cnpj)')
       .order('created_at');
-    if(error) throw error;
+    if(error){
+      return topbar('Dispositivos','inventário indisponível')
+        + `<div class="note" style="background:rgba(245,197,24,.08);border-color:rgba(245,197,24,.3)">
+             <b>Falta rodar o SQL do inventário.</b><br>
+             Rode <code>dispositivos.sql</code> no SQL Editor do Supabase para criar as colunas
+             <code>mac</code>, <code>observacao</code>, <code>ultimo_ip</code> e <code>storage_total</code>.
+             <div style="margin-top:8px;color:var(--mut);font-size:12px">Detalhe técnico: ${error.message}</div>
+           </div>`;
+    }
 
     const lista = chs||[];
     const semMac = lista.filter(c=> !c.mac).length;
@@ -637,7 +669,7 @@ const VIEWS = {
     const hoje=new Date().toISOString().slice(0,10);
     const [accsR, chsR, campsR] = await Promise.all([
       sb.from('accounts').select('id,plano').eq('ativo',true),
-      sb.from('channels').select('id,nome,last_seen_at,player_version,account_id,rustdesk_id,tags,autorizado,ultimo_ip,storage_livre,storage_total,accounts(nome)').eq('ativo',true).order('created_at'),
+      buscarCanaisOverview(),
       sb.from('campaigns').select('id,nome,data_inicio,data_fim,ativo,accounts(nome)')
     ]);
     const accs=accsR.data||[], chs=chsR.data||[], camps=campsR.data||[];
@@ -668,10 +700,10 @@ const VIEWS = {
           <td style="color:var(--mut)">${c.player_version||'—'}</td>
           <td style="white-space:nowrap">
             <button class="mini" onclick="verTela('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}')">◱ Ver tela</button>
-            <button class="mini" onclick="acessoRemoto('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}')" title="${c.rustdesk_id?'RustDesk '+c.rustdesk_id:'RustDesk não configurado'}">⧉ Remoto${c.rustdesk_id?'':' <span style="opacity:.5">·</span>'}</button>
+            ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick="acessoRemoto('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}')" title="${c.rustdesk_id?'RustDesk '+c.rustdesk_id:'RustDesk não configurado'}">⧉ Remoto</button>`}
             <button class="mini" onclick="pedirRefresh('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}')">⟳ Atualizar tela</button>
-            <button class="mini" onclick='editarTags("${c.id}","${(c.nome||'').replace(/"/g,'&quot;')}",${JSON.stringify(tags)})'>⌗ Tags</button>
-            ${pend
+            ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick='editarTags("${c.id}","${(c.nome||'').replace(/"/g,'&quot;')}",${JSON.stringify(tags)})'>⌗ Tags</button>`}
+            ${COLS_EXTRAS===false ? '' : pend
               ? `<button class="mini" style="background:#332a10;border-color:#4a3d1c;color:#F5C518" onclick='autorizar("${c.id}",true,"${(c.nome||'').replace(/"/g,'&quot;')}")'>✓ Autorizar</button>`
               : `<button class="mini" onclick='autorizar("${c.id}",false,"${(c.nome||'').replace(/"/g,'&quot;')}")' title="revogar autorização">⊘</button>`}
           </td>
@@ -1810,6 +1842,7 @@ async function exportarDispositivos(){
 let FILTRO_TAG = null;
 
 function chipsTags(canais){
+  if(COLS_EXTRAS === false) return '';   // recursos dormentes até rodar o SQL
   const cont = {};
   canais.forEach(c=> (c.tags||[]).forEach(t=> cont[t]=(cont[t]||0)+1 ));
   const tags = Object.keys(cont).sort((a,b)=> cont[b]-cont[a] || a.localeCompare(b));
