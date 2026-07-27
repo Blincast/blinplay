@@ -389,6 +389,7 @@ const NAV = {
     {sec:'OPERAÇÃO'},
     {k:'overview', ic:'▦', label:'Visão Geral'},
     {k:'estacoes', ic:'▤', label:'Estações & Canais'},
+    {k:'dispositivos', ic:'⌸', label:'Dispositivos'},
     {sec:'CONTEÚDO'},
     {k:'midia',    ic:'▣', label:'Biblioteca de Mídia'},
     {k:'prog',     ic:'☰', label:'Programação dos Canais'},
@@ -577,11 +578,66 @@ function playerBtn(){return `<button class="ghost" onclick="openPlayer()">▷ Ve
 
 const VIEWS = {
   /* ===== ADMIN ===== */
+
+  /* Inventário físico da frota: onde o box está, de quem é, qual o MAC.
+     Existe separado de Estações & Canais porque a pergunta é outra —
+     aqui não interessa programação, interessa patrimônio e localização. */
+  async dispositivos(){
+    const { data: chs, error } = await sb.from('channels')
+      .select('id,nome,codigo_curto,mac,observacao,ultimo_ip,storage_livre,storage_total,last_seen_at,player_version,ativo,accounts(nome,cnpj)')
+      .order('created_at');
+    if(error) throw error;
+
+    const lista = chs||[];
+    const semMac = lista.filter(c=> !c.mac).length;
+
+    const linhas = lista.map(c=>{
+      const on = c.last_seen_at && (Date.now()-new Date(c.last_seen_at).getTime() < 5*60*1000);
+      const hotel = c.accounts ? c.accounts.nome : '—';
+      const cnpj  = c.accounts && c.accounts.cnpj ? c.accounts.cnpj : '';
+      const pct = (c.storage_total && c.storage_livre != null)
+        ? Math.round(100*(c.storage_total-c.storage_livre)/c.storage_total) : null;
+      const gb = n => n==null ? '—' : (n/1073741824).toFixed(1)+' GB';
+      const nomeEsc = String(c.nome||'').replace(/"/g,'&quot;');
+      return `<tr class="row">
+        <td><div class="est-name">${hotel}</div>
+            <div class="est-sub">${cnpj||'sem CNPJ'}</div></td>
+        <td><div class="est-name" style="font-size:13px">${c.nome||'—'}</div>
+            <div class="est-sub">código ${c.codigo_curto||'—'}</div></td>
+        <td style="font-family:ui-monospace,monospace;font-size:12px;color:${c.mac?'var(--txt)':'#5f5f68'}">
+            ${c.mac || 'não cadastrado'}</td>
+        <td style="color:var(--mut);font-size:12px">${c.ultimo_ip||'—'}</td>
+        <td style="color:var(--mut);font-size:12px">${pct!==null ? pct+'%<div class="est-sub">'+gb(c.storage_livre)+' livre</div>' : '—'}</td>
+        <td><span class="stat ${on?'on':'off'}"><span class="dot ${on?'on':'off'}"></span>${on?'Online':'Offline'}</span>
+            <div class="est-sub">${c.player_version||'—'}</div></td>
+        <td style="color:var(--mut);font-size:12px;max-width:180px">${c.observacao||'<span style="color:#4a4a52">—</span>'}</td>
+        <td style="white-space:nowrap">
+          <button class="mini" onclick='editarInventario("${c.id}","${nomeEsc}")'>✎ Editar</button>
+        </td>
+      </tr>`;
+    }).join('');
+
+    return topbar('Dispositivos',
+      lista.length+' box(es) cadastrado(s)'+(semMac? ' · '+semMac+' sem MAC' : ' · todos com MAC'),
+      `<button class="ghost" onclick="exportarDispositivos()">↓ Exportar CSV</button>`)
+      + `<div class="panel">
+           <div class="panel-h"><h3>Inventário da frota</h3>
+             <span class="hint">MAC é identificador fixo do aparelho; o IP muda</span></div>
+           <table>
+             <thead><tr>
+               <th>Hotel</th><th>Canal</th><th>MAC</th><th>IP local</th>
+               <th>Disco</th><th>Status</th><th>Observação</th><th></th>
+             </tr></thead>
+             <tbody>${linhas || '<tr><td colspan="8"><div class="empty"><b>Nenhum box cadastrado</b>Crie uma estação em Estações &amp; Canais.</div></td></tr>'}</tbody>
+           </table>
+         </div>`;
+  },
+
   async overview(){
     const hoje=new Date().toISOString().slice(0,10);
     const [accsR, chsR, campsR] = await Promise.all([
       sb.from('accounts').select('id,plano').eq('ativo',true),
-      sb.from('channels').select('id,nome,last_seen_at,player_version,account_id,rustdesk_id,accounts(nome)').eq('ativo',true).order('created_at'),
+      sb.from('channels').select('id,nome,last_seen_at,player_version,account_id,rustdesk_id,tags,autorizado,ultimo_ip,storage_livre,storage_total,accounts(nome)').eq('ativo',true).order('created_at'),
       sb.from('campaigns').select('id,nome,data_inicio,data_fim,ativo,accounts(nome)')
     ]);
     const accs=accsR.data||[], chs=chsR.data||[], camps=campsR.data||[];
@@ -592,13 +648,21 @@ const VIEWS = {
     // tabela de canais com status
     let chRows;
     if(chs.length===0){
-      chRows='<tr><td colspan="4"><div class="empty"><b>Nenhum canal ainda</b>Cadastre uma conta e seus canais para começar.</div></td></tr>';
+      chRows='<tr><td colspan="5"><div class="empty"><b>Nenhum canal ainda</b>Cadastre uma conta e seus canais para começar.</div></td></tr>';
     } else {
-      chRows=chs.map(c=>{
+      const chsFiltrados = FILTRO_TAG ? chs.filter(c=> (c.tags||[]).includes(FILTRO_TAG)) : chs;
+      chRows=chsFiltrados.map(c=>{
         const on=c.last_seen_at && (Date.now()-new Date(c.last_seen_at).getTime()<5*60*1000);
         const visto=c.last_seen_at?tempoRel(c.last_seen_at):'nunca';
+        const tags=(c.tags||[]);
+        const tagsHtml = tags.length
+          ? tags.map(t=>'<span style="background:#1e1e24;color:var(--mut);font-size:10.5px;padding:2px 7px;border-radius:12px;margin-right:4px">'+t+'</span>').join('')
+          : '<span style="color:#4a4a52;font-size:11px">sem tags</span>';
+        const pend = (c.autorizado === false);
         return `<tr class="row">
-          <td><div class="est-name">${c.accounts?c.accounts.nome:'—'}</div><div class="est-sub">Canal: ${c.nome}</div></td>
+          <td><div class="est-name">${c.accounts?c.accounts.nome:'—'}${pend?' <span style="background:#332a10;color:#F5C518;font-size:10px;padding:2px 7px;border-radius:12px;vertical-align:middle">aguardando liberação</span>':''}</div>
+              <div class="est-sub">Canal: ${c.nome}${c.ultimo_ip?' · '+c.ultimo_ip:''}</div>
+              <div style="margin-top:4px">${tagsHtml}</div></td>
           <td><span class="stat ${on?'on':'off'}"><span class="dot ${on?'on':'off'}"></span>${on?'Online':'Offline'}</span></td>
           <td style="color:var(--mut)">${visto}</td>
           <td style="color:var(--mut)">${c.player_version||'—'}</td>
@@ -606,6 +670,10 @@ const VIEWS = {
             <button class="mini" onclick="verTela('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}')">◱ Ver tela</button>
             <button class="mini" onclick="acessoRemoto('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}')" title="${c.rustdesk_id?'RustDesk '+c.rustdesk_id:'RustDesk não configurado'}">⧉ Remoto${c.rustdesk_id?'':' <span style="opacity:.5">·</span>'}</button>
             <button class="mini" onclick="pedirRefresh('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}')">⟳ Atualizar tela</button>
+            <button class="mini" onclick='editarTags("${c.id}","${(c.nome||'').replace(/"/g,'&quot;')}",${JSON.stringify(tags)})'>⌗ Tags</button>
+            ${pend
+              ? `<button class="mini" style="background:#332a10;border-color:#4a3d1c;color:#F5C518" onclick='autorizar("${c.id}",true,"${(c.nome||'').replace(/"/g,'&quot;')}")'>✓ Autorizar</button>`
+              : `<button class="mini" onclick='autorizar("${c.id}",false,"${(c.nome||'').replace(/"/g,'&quot;')}")' title="revogar autorização">⊘</button>`}
           </td>
         </tr>`;
       }).join('');
@@ -633,6 +701,7 @@ const VIEWS = {
         <div class="kpi"><div class="lab">Campanhas no ar</div><div class="val" style="color:var(--gold)">${campsAtivas.length}</div></div>
       </div>
       <div class="note">⚡ <div><b>Acesso remoto à tela</b> (Fully Remote Admin / TeamViewer) é exclusivo deste painel. O cliente só recebe status e reboot.</div></div>
+      ${chipsTags(chs)}
       <div class="panel"><div class="panel-h"><h3>Canais</h3><span class="hint">online = visto nos últimos 5 min</span></div>
         <table><thead><tr><th>Hotel / Canal</th><th>Status</th><th>Último acesso</th><th>Versão</th><th></th></tr></thead><tbody>${chRows}</tbody></table></div>`
     + campHtml;
@@ -1661,6 +1730,150 @@ async function verTela(channelId, nomeCanal){
    O botao monta rustdesk://connection/new/<ID>?password=<SENHA>, que abre
    o cliente instalado na maquina. Credenciais nunca saem por RLS: vem de
    ler_rustdesk, que exige superadmin. */
+/* ---- INVENTÁRIO DE DISPOSITIVOS -------------------------------------
+   MAC é digitado na bancada, não lido pelo box: Android 10+ bloqueia a
+   leitura de MAC por app comum, e só libera com Device Owner. Até lá, o
+   preenchimento é manual — e por isso a normalização fica no banco, para
+   não depender de quem digitou usar dois-pontos ou hífen. */
+async function editarInventario(channelId, nomeCanal){
+  let atual = { mac:'', observacao:'' };
+  try{
+    const { data } = await sb.from('channels').select('mac,observacao').eq('id',channelId).single();
+    if(data) atual = data;
+  }catch(e){}
+  abrirModal(
+    '<h3>Dispositivo</h3><div class="fsub">'+(nomeCanal||'')+'</div>'+
+    '<div class="fld"><label>MAC do box</label>'+
+      '<input id="iv_mac" placeholder="9C:00:D3:CC:83:5E" maxlength="17" '+
+      'value="'+String(atual.mac||'').replace(/"/g,'&quot;')+'"></div>'+
+    '<div class="fld"><label>Observação</label>'+
+      '<input id="iv_obs" placeholder="TV do lobby. Controle fica na recepção." '+
+      'value="'+String(atual.observacao||'').replace(/"/g,'&quot;')+'"></div>'+
+    '<div style="color:var(--mut);font-size:11.5px;line-height:1.6">Pode colar o MAC de qualquer '+
+      'forma — colado, com hífen ou com dois-pontos. O sistema padroniza.</div>'+
+    '<div id="iv_msg" class="fmsg"></div>'+
+    '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">'+
+      '<button class="ghost" onclick="fecharModal()">Cancelar</button>'+
+      '<button class="ghost" onclick="salvarInventario(\''+channelId+'\')">Salvar</button></div>'
+  );
+}
+
+async function salvarInventario(channelId){
+  const mac = (document.getElementById('iv_mac').value||'').trim();
+  const obs = (document.getElementById('iv_obs').value||'').trim();
+  const msg = document.getElementById('iv_msg');
+  msg.className='fmsg'; msg.textContent='Salvando…';
+  try{
+    const { error } = await sb.rpc('salvar_inventario', {
+      p_canal: channelId, p_mac: mac, p_observacao: obs
+    });
+    if(error) throw error;
+    msg.className='fmsg ok'; msg.textContent='Salvo.';
+    setTimeout(()=>{ fecharModal(); render(); }, 400);
+  }catch(e){
+    msg.className='fmsg err';
+    msg.textContent = String((e&&e.message)||e);
+  }
+}
+
+async function exportarDispositivos(){
+  try{
+    const { data } = await sb.from('channels')
+      .select('nome,codigo_curto,mac,ultimo_ip,observacao,player_version,last_seen_at,storage_livre,storage_total,accounts(nome,cnpj)')
+      .order('created_at');
+    const cab = ['Hotel','CNPJ','Canal','Codigo','MAC','IP','Versao','Ultimo acesso','Disco livre GB','Disco total GB','Observacao'];
+    const linhas = (data||[]).map(c=>[
+      c.accounts?c.accounts.nome:'', c.accounts?(c.accounts.cnpj||''):'',
+      c.nome||'', c.codigo_curto||'', c.mac||'', c.ultimo_ip||'',
+      c.player_version||'', c.last_seen_at||'',
+      c.storage_livre!=null?(c.storage_livre/1073741824).toFixed(2):'',
+      c.storage_total!=null?(c.storage_total/1073741824).toFixed(2):'',
+      (c.observacao||'').replace(/[\r\n]+/g,' ')
+    ]);
+    const csv = [cab, ...linhas]
+      .map(l=> l.map(v=> '"'+String(v).replace(/"/g,'""')+'"').join(';'))
+      .join('\r\n');
+    // BOM para o Excel abrir acentuação correta
+    const blob = new Blob(['\ufeff'+csv], { type:'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'dispositivos-blinplay-'+new Date().toISOString().slice(0,10)+'.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }catch(e){ alert('Erro ao exportar: '+((e&&e.message)||e)); }
+}
+
+/* ---- TAGS E AUTORIZAÇÃO -----------------------------------------------
+   Com ~150 boxes, tag é o que substitui rolagem por filtro. E o portão de
+   autorização evita que um dígito errado no código coloque um box no canal
+   de outro hotel — risco real numa migração de frota inteira. */
+let FILTRO_TAG = null;
+
+function chipsTags(canais){
+  const cont = {};
+  canais.forEach(c=> (c.tags||[]).forEach(t=> cont[t]=(cont[t]||0)+1 ));
+  const tags = Object.keys(cont).sort((a,b)=> cont[b]-cont[a] || a.localeCompare(b));
+  if(!tags.length) return '';
+  const chip = (t, n, ativo)=>
+    '<button class="mini" style="'+(ativo?'background:#2a2118;border-color:#4a3d1c;color:#F5C518':'')+'" '+
+    'onclick="filtrarTag('+(t===null?'null':"'"+t+"'")+')">'+(t||'todas')+
+    (n!==null?' <span style="opacity:.55">'+n+'</span>':'')+'</button>';
+  return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 2px">'+
+    chip(null,null,FILTRO_TAG===null)+
+    tags.map(t=> chip(t,cont[t],FILTRO_TAG===t)).join('')+'</div>';
+}
+
+function filtrarTag(t){ FILTRO_TAG = t; render(); }
+
+async function autorizar(channelId, valor, nome){
+  const rotulo = valor ? 'Autorizar' : 'Revogar autorização de';
+  if(!confirm(rotulo+' "'+nome+'"?')) return;
+  try{
+    const { error } = await sb.rpc('autorizar_canal', { p_canal: channelId, p_autorizado: valor });
+    if(error) throw error;
+    render();
+  }catch(e){ alert('Erro: '+((e&&e.message)||e)); }
+}
+
+async function editarTags(channelId, nome, atuais){
+  let sugestoes = [];
+  try{
+    const { data } = await sb.rpc('listar_tags');
+    sugestoes = (data||[]).map(r=> r.tag);
+  }catch(e){}
+  const val = (atuais||[]).join(', ');
+  abrirModal(
+    '<h3>Tags</h3><div class="fsub">'+nome+'</div>'+
+    '<div class="fld"><label>Separadas por vírgula</label>'+
+      '<input id="tg_in" placeholder="hilton, rj, migrado" value="'+val.replace(/"/g,'&quot;')+'"></div>'+
+    (sugestoes.length
+      ? '<div style="color:var(--mut);font-size:11.5px;line-height:1.8">Em uso: '+
+        sugestoes.map(t=>'<span style="background:#1e1e24;padding:2px 7px;border-radius:12px;margin-right:4px;cursor:pointer" '+
+        'onclick="addTag(\''+t+'\')">'+t+'</span>').join('')+'</div>'
+      : '')+
+    '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">'+
+      '<button class="ghost" onclick="fecharModal()">Fechar</button>'+
+      '<button class="ghost" onclick="salvarTags(\''+channelId+'\')">Salvar</button></div>'
+  );
+}
+
+function addTag(t){
+  const el=document.getElementById('tg_in'); if(!el) return;
+  const lista = el.value.split(',').map(x=>x.trim()).filter(Boolean);
+  if(!lista.includes(t)) lista.push(t);
+  el.value = lista.join(', ');
+}
+
+async function salvarTags(channelId){
+  const el=document.getElementById('tg_in');
+  const arr=(el.value||'').split(',').map(x=>x.trim().toLowerCase()).filter(Boolean);
+  try{
+    const { error } = await sb.rpc('salvar_tags', { p_canal: channelId, p_tags: arr });
+    if(error) throw error;
+    fecharModal(); render();
+  }catch(e){ alert('Erro: '+((e&&e.message)||e)); }
+}
+
 async function acessoRemoto(channelId, nomeCanal){
   clearInterval(_snapTimer);
   let cred = { rustdesk_id:'', rustdesk_senha:'' };
