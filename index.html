@@ -388,7 +388,7 @@ const CAMP = [
    Existe porque, sem ela, não há como saber qual index.html está publicado —
    e subir um arquivo antigo por engano é indistinguível de um recurso que
    não funcionou. */
-const PAINEL_VERSAO = 'v1.5';
+const PAINEL_VERSAO = 'v1.7';
 console.log('[BlinPlay] painel', PAINEL_VERSAO);
 
 /* ---------------- NAVEGAÇÃO ---------------- */
@@ -707,7 +707,8 @@ const VIEWS = {
               <div style="margin-top:4px">${tagsHtml}</div></td>
           <td><span class="stat ${on?'on':'off'}"><span class="dot ${on?'on':'off'}"></span>${on?'Online':'Offline'}</span></td>
           <td style="color:var(--mut)">${visto}</td>
-          <td style="color:var(--mut)">${c.player_version||'—'}</td>
+          <td style="color:var(--mut)">${c.player_version||'—'}
+              <div class="est-sub">${nProg? nProg+' na programação' : 'sem programação'}${c.ativo?'':' · INATIVO'}</div></td>
           <td style="white-space:nowrap">
             <button class="mini" onclick="verTela('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}')">◱ Ver tela</button>
             ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick="acessoRemoto('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}')" title="${c.rustdesk_id?'RustDesk '+c.rustdesk_id:'RustDesk não configurado'}">⧉ Remoto</button>`}
@@ -748,10 +749,17 @@ const VIEWS = {
     + campHtml;
   },
   async estacoes(){
-    const { data: chs, error } = await sb.from('channels')
-      .select('id,nome,descricao,device_token,codigo_curto,ativo,last_seen_at,player_version,account_id,accounts(nome,cnpj)')
-      .order('created_at',{ascending:true});
+    const [{ data: chs, error }, { data: pl }] = await Promise.all([
+      sb.from('channels')
+        .select('id,nome,descricao,device_token,codigo_curto,ativo,last_seen_at,player_version,account_id,accounts(nome,cnpj)')
+        .order('created_at',{ascending:true}),
+      sb.from('playlist_items').select('channel_id')
+    ]);
     if(error) throw error;
+    // quantos itens de programação cada canal tem: é o que decide se
+    // excluir é seguro, porque programação e histórico dependem do canal
+    const nPl = {};
+    (pl||[]).forEach(i=> nPl[i.channel_id] = (nPl[i.channel_id]||0) + 1);
     let rows;
     if(!chs || chs.length===0){
       rows='<tr><td colspan="6"><div class="empty"><b>Nenhuma estação ainda</b>Cadastre uma conta primeiro, depois adicione os canais (boxes) dela.</div></td></tr>';
@@ -761,16 +769,19 @@ const VIEWS = {
         const visto = c.last_seen_at ? tempoRel(c.last_seen_at) : 'nunca';
         const url = location.origin+location.pathname.replace(/index\.html$/,'')+'player.html?token='+c.device_token;
         const cod = c.codigo_curto||'—';
-        return `<tr class="row">
+        const nProg = nPl[c.id] || 0;
+        return `<tr class="row" style="${c.ativo?'':'opacity:.5'}">
           <td><div class="est-name">${c.accounts?c.accounts.nome:'—'}</div><div class="est-sub">Canal: ${c.nome}</div></td>
           <td><span class="stat ${online?'on':'off'}"><span class="dot ${online?'on':'off'}"></span>${online?'Online':'Offline'}</span></td>
           <td><span style="font-family:monospace;font-size:18px;letter-spacing:2px;color:var(--gold,#F5A800);font-weight:700">${cod}</span></td>
           <td style="color:var(--mut)">${visto}</td>
           <td style="color:var(--mut)">${c.player_version||'—'}</td>
           <td style="white-space:nowrap">
-            <button class="mini" onclick="copiarCodigo('${cod}')">⧉ Copiar código</button>
+            <button class="mini" onclick="copiarCodigo('${cod}')">⧉ Código</button>
             <button class="mini" onclick="copiarURL('${url}')">⧉ URL</button>
-            <button class="mini danger" onclick="alert('Reboot remoto: liga no Fully no próximo passo')">⟳ Reboot</button>
+            <button class="mini" onclick='renomearCanal("${c.id}","${String(c.nome||'').replace(/"/g,'&quot;')}")'>✎ Renomear</button>
+            <button class="mini" onclick='alternarCanal("${c.id}","${String(c.nome||'').replace(/"/g,'&quot;')}",${c.ativo?'false':'true'})'>${c.ativo?'⊘ Inativar':'✓ Reativar'}</button>
+            <button class="mini danger" onclick='excluirCanal("${c.id}","${String(c.nome||'').replace(/"/g,'&quot;')}",${nPl[c.id]||0})'>🗑</button>
           </td></tr>`;
       }).join('');
     }
@@ -791,15 +802,29 @@ const VIEWS = {
     if(PROG_CH) return await progEditor(PROG_CH);
     let q = sb.from('channels').select('id,nome,account_id,accounts(nome)').eq('ativo',true);
     if(ROLE==='cli' && CLI_ACC) q = q.eq('account_id', CLI_ACC.id);   // cliente: só os canais dele
-    const { data: chs, error } = await q.order('created_at');
+    const [{ data: chs, error }, { data: plItems }] = await Promise.all([
+      q.order('created_at'),
+      sb.from('playlist_items').select('channel_id').eq('ativo',true)
+    ]);
     if(error) throw error;
+    // quantos itens cada canal já tem no ar: com 150 canais, saber quais
+    // estão vazios é a informação que orienta o trabalho
+    const nItens = {};
+    (plItems||[]).forEach(i=> nItens[i.channel_id] = (nItens[i.channel_id]||0) + 1);
     if(!chs || chs.length===0){
       return topbar('Montar Programação','Escolha um canal para montar o que toca','')
         +`<div class="panel"><div class="empty"><b>Nenhum canal ainda</b>${ROLE==='cli'?'A Blincast instala e configura seus canais.':'Cadastre uma estação em “Estações & Canais” primeiro.'}</div></div>`;
     }
-    const rows=chs.map(c=>`<tr class="row" style="cursor:pointer" onclick="abrirProg('${c.id}')">
+    const rows=chs.map(c=>{
+      const n = nItens[c.id] || 0;
+      const selo = n
+        ? `<span class="badge live">${n} ${n===1?'item':'itens'} no ar</span>`
+        : `<span class="badge paused">programação vazia</span>`;
+      return `<tr class="row" style="cursor:pointer" onclick="abrirProg('${c.id}')">
       <td><div class="est-name">${c.accounts?c.accounts.nome:'—'}</div><div class="est-sub">Canal: ${c.nome}</div></td>
-      <td style="text-align:right"><button class="mini">Montar programação →</button></td></tr>`).join('');
+      <td>${selo}</td>
+      <td style="text-align:right"><button class="mini">Montar programação →</button></td></tr>`;
+    }).join('');
     return topbar('Montar Programação','Escolha o canal para definir o que toca e em que ordem','')
       +`<div class="panel"><table><tbody>${rows}</tbody></table></div>`;
   },
@@ -1539,6 +1564,59 @@ async function salvarVinculos(userId){
   msg.className='fmsg ok'; msg.textContent='Hotéis atualizados!';
   setTimeout(()=>{ fecharModal(); render(); }, 500);
 }
+/* ---- INATIVAR / RENOMEAR / EXCLUIR CANAL -----------------------------
+   Inativar é o caminho normal: o canal para de ser servido ao box e sai da
+   Visão Geral, mas programação, mídia, log e histórico continuam intactos.
+   Excluir apaga de verdade — e leva a programação com ele. Por isso a
+   contagem de itens aparece na confirmação: apagar canal de cliente ativo
+   é o tipo de erro que não tem desfazer. */
+async function alternarCanal(id, nome, ativar){
+  const aviso = ativar
+    ? 'O canal volta a ser servido ao box e reaparece na Visão Geral.'
+    : 'O box para de receber conteúdo. Programação e mídia não são apagadas.';
+  if(!confirm((ativar?'Reativar':'Inativar')+' o canal "'+nome+'"?\n\n'+aviso)) return;
+  try{
+    const { error } = await sb.from('channels').update({ ativo: ativar }).eq('id', id);
+    if(error) throw error;
+    render();
+  }catch(e){ alert('Erro: '+((e&&e.message)||e)); }
+}
+
+async function renomearCanal(id, atual){
+  const novo = prompt('Novo nome do canal:', atual);
+  if(novo === null) return;
+  const nome = String(novo).trim();
+  if(!nome){ alert('O nome não pode ficar vazio.'); return; }
+  if(nome === atual) return;
+  try{
+    const { error } = await sb.from('channels').update({ nome }).eq('id', id);
+    if(error) throw error;
+    render();
+  }catch(e){ alert('Erro: '+((e&&e.message)||e)); }
+}
+
+async function excluirCanal(id, nome, nProg){
+  let aviso = 'EXCLUIR o canal "'+nome+'" definitivamente?';
+  if(nProg > 0){
+    aviso += '\n\nEste canal tem '+nProg+' item(ns) na programação, que também serão apagados.';
+  }
+  aviso += '\n\nO código de 6 dígitos deixa de funcionar e o box perde o canal.'
+        +  '\nSe a intenção for apenas suspender, use Inativar.';
+  if(!confirm(aviso)) return;
+  if(prompt('Para confirmar, digite EXCLUIR') !== 'EXCLUIR') return;
+  try{
+    // remove os dependentes primeiro: sem isso o banco recusa por chave
+    // estrangeira e o usuário vê um erro técnico sem saber o que fazer
+    await sb.from('playlist_items').delete().eq('channel_id', id);
+    const { error } = await sb.from('channels').delete().eq('id', id);
+    if(error) throw error;
+    render();
+  }catch(e){
+    alert('Não foi possível excluir: '+((e&&e.message)||e)
+      +'\n\nProvavelmente há registros vinculados (campanhas, logs). Use Inativar.');
+  }
+}
+
 async function novaEstacao(){
   const { data: accs } = await sb.from('accounts').select('id,nome').eq('ativo',true).order('nome');
   if(!accs || accs.length===0){ alert('Cadastre uma conta (hotel) antes de criar uma estação.'); return; }
@@ -1674,7 +1752,17 @@ async function progEditor(chId){
       <div class="pl-meta"><div class="pl-nm">${m.nome}</div><div class="pl-sub">${isVid?'vídeo · '+fmtDur(m.duracao_seg):m.duracao_seg+'s'}</div></div>
       <button class="mini" onclick="addToProg('${chId}','${ch.account_id}','${m.id}')">＋ Incluir</button>
     </div>`;
-  }).join('') : '<div class="empty" style="padding:30px"><b>Tudo já está no ar</b>Todas as mídias desta conta já estão na programação.</div>';
+  }).join('')
+    : ((meds && meds.length)
+        // tem mídia, mas toda ela já entrou na programação
+        ? '<div class="empty" style="padding:30px"><b>Tudo já está no ar</b>'
+          + 'Todas as ' + meds.length + ' mídias desta conta já estão na programação.</div>'
+        // conta sem NENHUMA mídia: antes aparecia "tudo já está no ar", o que
+        // é falso e faz a tela parecer quebrada numa conta recém-criada
+        : '<div class="empty" style="padding:30px"><b>Esta conta não tem mídia</b>'
+          + 'Suba os vídeos e imagens do hotel antes de montar a programação.'
+          + '<div style="margin-top:12px"><button class="ghost" onclick="CUR=\'midia\';PROG_CH=null;buildNav();render()">'
+          + 'Ir para a Biblioteca de Mídia →</button></div></div>');
 
   // coluna direita: playlist atual em ordem
   const seq = (items||[]).map((it,i)=>{
@@ -1697,7 +1785,10 @@ async function progEditor(chId){
 
   const addAll = disponiveis.length ? `<button class="ghost" onclick="addAllProg('${chId}','${ch.account_id}')">＋ Incluir todas</button>` : '';
 
-  return topbar('Programação · '+ (ch.accounts?ch.accounts.nome:'') +' / '+ch.nome,'O que toca neste canal, em ordem, em loop',
+  const resumo = 'O que toca neste canal, em ordem, em loop · '
+    + (meds ? meds.length : 0) + ' mídia(s) na conta · '
+    + (items ? items.length : 0) + ' no ar';
+  return topbar('Programação · '+ (ch.accounts?ch.accounts.nome:'') +' / '+ch.nome, resumo,
       `<button class="ghost" onclick="voltarProg()">← Voltar aos canais</button>`)
     + `<div class="prog-grid">
         <div class="panel">
