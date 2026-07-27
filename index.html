@@ -388,7 +388,7 @@ const CAMP = [
    Existe porque, sem ela, não há como saber qual index.html está publicado —
    e subir um arquivo antigo por engano é indistinguível de um recurso que
    não funcionou. */
-const PAINEL_VERSAO = 'v1.7';
+const PAINEL_VERSAO = 'v1.8';
 console.log('[BlinPlay] painel', PAINEL_VERSAO);
 
 /* ---------------- NAVEGAÇÃO ---------------- */
@@ -707,8 +707,7 @@ const VIEWS = {
               <div style="margin-top:4px">${tagsHtml}</div></td>
           <td><span class="stat ${on?'on':'off'}"><span class="dot ${on?'on':'off'}"></span>${on?'Online':'Offline'}</span></td>
           <td style="color:var(--mut)">${visto}</td>
-          <td style="color:var(--mut)">${c.player_version||'—'}
-              <div class="est-sub">${nProg? nProg+' na programação' : 'sem programação'}${c.ativo?'':' · INATIVO'}</div></td>
+          <td style="color:var(--mut)">${c.player_version||'—'}</td>
           <td style="white-space:nowrap">
             <button class="mini" onclick="verTela('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}')">◱ Ver tela</button>
             ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick="acessoRemoto('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}')" title="${c.rustdesk_id?'RustDesk '+c.rustdesk_id:'RustDesk não configurado'}">⧉ Remoto</button>`}
@@ -775,7 +774,8 @@ const VIEWS = {
           <td><span class="stat ${online?'on':'off'}"><span class="dot ${online?'on':'off'}"></span>${online?'Online':'Offline'}</span></td>
           <td><span style="font-family:monospace;font-size:18px;letter-spacing:2px;color:var(--gold,#F5A800);font-weight:700">${cod}</span></td>
           <td style="color:var(--mut)">${visto}</td>
-          <td style="color:var(--mut)">${c.player_version||'—'}</td>
+          <td style="color:var(--mut)">${c.player_version||'—'}
+              <div class="est-sub">${nProg? nProg+' na programação' : 'sem programação'}${c.ativo?'':' · INATIVO'}</div></td>
           <td style="white-space:nowrap">
             <button class="mini" onclick="copiarCodigo('${cod}')">⧉ Código</button>
             <button class="mini" onclick="copiarURL('${url}')">⧉ URL</button>
