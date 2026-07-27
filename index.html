@@ -732,7 +732,6 @@ const VIEWS = {
         <div class="kpi"><div class="lab">Online agora</div><div class="val" style="color:var(--on)">${online}<small>/${chs.length}</small></div></div>
         <div class="kpi"><div class="lab">Campanhas no ar</div><div class="val" style="color:var(--gold)">${campsAtivas.length}</div></div>
       </div>
-      <div class="note">⚡ <div><b>Acesso remoto à tela</b> (Fully Remote Admin / TeamViewer) é exclusivo deste painel. O cliente só recebe status e reboot.</div></div>
       ${chipsTags(chs)}
       <div class="panel"><div class="panel-h"><h3>Canais</h3><span class="hint">online = visto nos últimos 5 min</span></div>
         <table><thead><tr><th>Hotel / Canal</th><th>Status</th><th>Último acesso</th><th>Versão</th><th></th></tr></thead><tbody>${chRows}</tbody></table></div>`
@@ -828,26 +827,47 @@ const VIEWS = {
       + `<div class="panel"><div class="panel-h"><h3>Campanhas</h3><span class="hint">rodízio: padrão · padrão · campanha · padrão…</span></div>${rows}</div>`;
   },
   async contas(){
-    const { data: accs, error } = await sb.from('accounts')
-      .select('id,cnpj,nome,ativo,plano').order('created_at',{ascending:true});
-    if(error) throw error;
+    // Traz também TODAS as contas (inclusive inativas) e conta os canais de cada
+    // uma. A contagem é o que decide se excluir é seguro: conta com canal tem
+    // histórico, programação e mídia ligados a ela.
+    const [accR, chR] = await Promise.all([
+      sb.from('accounts').select('id,cnpj,nome,ativo,plano').order('created_at',{ascending:true}),
+      sb.from('channels').select('id,account_id')
+    ]);
+    if(accR.error) throw accR.error;
+    const accs = accR.data || [];
+    const canais = {};
+    (chR.data||[]).forEach(c=> canais[c.account_id] = (canais[c.account_id]||0) + 1 );
+
     let rows;
-    if(!accs || accs.length===0){
-      rows = '<tr><td colspan="5"><div class="empty"><b>Nenhuma conta ainda</b>Clique em “Nova conta” para cadastrar seu primeiro hotel.</div></td></tr>';
+    if(accs.length===0){
+      rows = '<tr><td colspan="6"><div class="empty"><b>Nenhuma conta ainda</b>Clique em “Nova conta” para cadastrar seu primeiro hotel.</div></td></tr>';
     } else {
       rows = accs.map(a=>{
         const tipo = a.plano==='interno' ? 'Blincast' : 'Cliente';
-        return `<tr class="row">
+        const n = canais[a.id] || 0;
+        const nomeEsc = String(a.nome||'').replace(/"/g,'&quot;');
+        return `<tr class="row" style="${a.ativo?'':'opacity:.55'}">
           <td class="est-name">${a.nome}</td>
           <td style="color:var(--mut)">${a.cnpj}</td>
           <td><span class="badge ${a.ativo?'live':'done'}">${a.ativo?'Ativa':'Inativa'}</span></td>
           <td><span class="badge ${tipo==='Blincast'?'live':'sched'}">${tipo}</span></td>
-          <td><button class="mini" onclick="CUR='usuarios';buildNav();render()">Ver usuários</button></td>
+          <td style="color:var(--mut)">${n} canal${n===1?'':'is'}</td>
+          <td style="white-space:nowrap">
+            <button class="mini" onclick="CUR='usuarios';buildNav();render()">Usuários</button>
+            <button class="mini" onclick='alternarConta("${a.id}","${nomeEsc}",${a.ativo?'false':'true'})'>${a.ativo?'⊘ Inativar':'✓ Reativar'}</button>
+            ${n===0
+              ? `<button class="mini danger" onclick='excluirConta("${a.id}","${nomeEsc}")'>🗑 Excluir</button>`
+              : `<button class="mini" disabled style="opacity:.35;cursor:not-allowed" title="Conta com canal não pode ser excluída. Remova os canais primeiro ou apenas inative.">🗑 Excluir</button>`}
+          </td>
         </tr>`;
       }).join('');
     }
-    return topbar('Contas / Hotéis','Cada conta é um hotel (CNPJ). '+(accs?accs.length:0)+' cadastrada(s).', `<button class="solid" onclick="novaConta()">＋ Nova conta</button>`)
-    +`<div class="panel"><table><thead><tr><th>Conta / Hotel</th><th>CNPJ</th><th>Status</th><th>Tipo</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    return topbar('Contas / Hotéis','Cada conta é um hotel (CNPJ). '+accs.length+' cadastrada(s).', `<button class="solid" onclick="novaConta()">＋ Nova conta</button>`)
+    +`<div class="panel">
+        <div class="panel-h"><h3>Contas</h3><span class="hint">inativar preserva o histórico · excluir só quando não há canal</span></div>
+        <table><thead><tr><th>Conta / Hotel</th><th>CNPJ</th><th>Status</th><th>Tipo</th><th>Canais</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`;
   },
 
   async usuarios(){
@@ -1190,6 +1210,46 @@ function abrirModal(html){
 function fecharModal(){ const m=document.getElementById('modalRoot'); if(m) m.innerHTML=''; }
 
 /* ---- Nova conta (hotel) ---- */
+/* ---- INATIVAR / EXCLUIR CONTA ---------------------------------------
+   Inativar é o caminho normal: preserva histórico, programação e mídia, e
+   o cliente perde o acesso. Excluir apaga de verdade e por isso só fica
+   disponível quando a conta não tem canal nenhum — conta com canal tem
+   dados dependentes e a exclusão viraria erro de chave estrangeira ou,
+   pior, apagaria em cascata. */
+async function alternarConta(id, nome, ativar){
+  const acao = ativar ? 'Reativar' : 'Inativar';
+  const aviso = ativar
+    ? 'O cliente volta a ter acesso ao painel.'
+    : 'O cliente perde o acesso ao painel. Os canais continuam tocando e nada é apagado.';
+  if(!confirm(acao+' "'+nome+'"?\n\n'+aviso)) return;
+  try{
+    const { error } = await sb.from('accounts').update({ ativo: ativar }).eq('id', id);
+    if(error) throw error;
+    render();
+  }catch(e){ alert('Erro: '+((e&&e.message)||e)); }
+}
+
+async function excluirConta(id, nome){
+  // dupla checagem no servidor: a tela pode estar desatualizada
+  const { data: ch } = await sb.from('channels').select('id').eq('account_id', id).limit(1);
+  if(ch && ch.length){
+    alert('Esta conta tem canal vinculado e não pode ser excluída.\n\nRemova os canais primeiro, ou use Inativar.');
+    render(); return;
+  }
+  const { data: us } = await sb.from('user_accounts').select('user_id').eq('account_id', id).limit(1);
+  const extra = (us && us.length) ? '\n\nAtenção: existem usuários vinculados a esta conta.' : '';
+  if(!confirm('EXCLUIR "'+nome+'" definitivamente?'+extra+'\n\nEsta ação não pode ser desfeita. Se a intenção for apenas suspender o acesso, use Inativar.')) return;
+  if(prompt('Para confirmar, digite EXCLUIR') !== 'EXCLUIR') return;
+  try{
+    const { error } = await sb.from('accounts').delete().eq('id', id);
+    if(error) throw error;
+    render();
+  }catch(e){
+    alert('Não foi possível excluir: '+((e&&e.message)||e)+
+          '\n\nProvavelmente existem registros vinculados. Use Inativar.');
+  }
+}
+
 function novaConta(){
   abrirModal(`
     <h3>Nova conta</h3>
