@@ -64,13 +64,78 @@
 
 <script>
 /* ================= CONFIG ================= */
-const PLAYER_VERSION = 'v3.7d';   // versão do player — aparece na coluna VERSÃO do painel
+const PLAYER_VERSION = 'v4.0d';   // versão do player — aparece na coluna VERSÃO do painel
 const SB_URL = 'https://wjyaxmbkdjebulosdtds.supabase.co';
 const SB_KEY = 'sb_publishable_mmTZZoQCGe24bTshASUi1w_JKnyU4sv';
 const MEDIA_BASE = SB_URL + '/storage/v1/object/public/blinplay-media/';
 const RESYNC_FALLBACK_MS = 15 * 1000;  // FALLBACK rápido: checa a cada 15s quando Realtime NÃO está confirmado
 let resyncTimer = null;
 let realtimeOK = false;  // vira true quando o Realtime confirma a conexão
+
+/* ================= PORTAO DE AUTORIZACAO =================
+   Box novo entra em espera ate alguem liberar no painel. Motivo: na
+   migracao de ~150 boxes, um digito errado no codigo de 6 digitos coloca
+   um box no canal de outro hotel — e conteudo de cliente vaza para tela
+   de cliente. O portao troca esse risco por um clique de aprovacao.
+
+   Canais que ja existiam foram marcados como autorizados no SQL, entao a
+   frota atual nao para. */
+let autorizado = null;          // null = ainda nao verificado
+let esperaAutorizacao = null;
+
+async function verificarAutorizacao(){
+  if(!sb || !token) return true;
+  try{
+    const { data, error } = await sb.rpc('verificar_autorizacao', { p_token: token });
+    if(error) throw error;
+    const r = (data && data[0]) || null;
+    if(!r) return true;                       // sem resposta: nao bloqueia
+    autorizado = !!r.autorizado;
+    return autorizado;
+  }catch(e){
+    // offline ou RPC indisponivel: NAO bloqueia. Um box em campo sem rede
+    // nao pode parar de tocar por causa de verificacao de autorizacao.
+    logar('AUTORIZACAO nao verificada: '+String((e&&e.message)||e).slice(0,50));
+    return true;
+  }
+}
+
+function telaAguardandoAutorizacao(){
+  showMsg('Estação aguardando liberação.<br>' +
+          '<span style="font-size:.62em;opacity:.75">Código ' +
+          (localStorage.getItem('blinplay_ultimo_code')||'') +
+          ' · libere no painel BlinPlay</span>', true);
+  logar('AGUARDANDO AUTORIZACAO');
+  clearInterval(esperaAutorizacao);
+  esperaAutorizacao = setInterval(async ()=>{
+    if(await verificarAutorizacao()){
+      clearInterval(esperaAutorizacao);
+      logar('AUTORIZADO — iniciando');
+      hideMsg();
+      sincronizar(true);
+    }
+  }, 20000);
+}
+
+/* o box se apresenta: alimenta a fila de autorizacao com informacao util */
+async function apresentarBox(){
+  if(!sb || !token) return;
+  let livre = null, total = null;
+  try{
+    if(navigator.storage && navigator.storage.estimate){
+      const e = await navigator.storage.estimate();
+      livre = Math.max(0, Math.round((e.quota||0) - (e.usage||0)));
+      total = Math.round(e.quota||0);
+    }
+  }catch(e){}
+  let mac = null;
+  try{ if(window.BlinPlayNative && window.BlinPlayNative.mac) mac = window.BlinPlayNative.mac(); }catch(e){}
+  try{
+    await sb.rpc('apresentar_box', {
+      p_token: token, p_ip: null, p_mac: mac, p_livre: livre, p_total: total
+    });
+  }catch(e){}
+}
 
 /* ================= DIAGNOSTICO =================
    Ativado por ?diag=1 na URL. Objetivo: descobrir a causa de uma falha
@@ -158,6 +223,29 @@ async function amostrar(){
 /* estado do Service Worker: a pergunta central em box com APK proprio.
    Se nao houver SW controlando, todo o cache offline esta por conta do
    cache HTTP da WebView -- que nao da garantia nenhuma. */
+/* Device Owner e kiosk nativo: informado pelo APK quando disponivel */
+/* estado real do audio do item que esta na tela */
+function estadoAudio(){
+  try{
+    const st = document.getElementById('stage');
+    const on = st && (st.querySelector('.slide.on') || st.lastElementChild);
+    const v  = on && on.querySelector ? on.querySelector('video') : null;
+    if(!v) return 'sem video na tela';
+    return v.muted ? 'MUDO' : ('com som (vol '+Math.round((v.volume||0)*100)+'%)');
+  }catch(e){ return 'n/d'; }
+}
+
+function infoOwner(){
+  try{
+    if(!window.BlinPlayNative || !window.BlinPlayNative.ehDeviceOwner) return 'ponte antiga';
+    const o = window.BlinPlayNative.ehDeviceOwner();
+    if(!o) return 'NAO provisionado';
+    let k = false;
+    try{ k = window.BlinPlayNative.kiosk(); }catch(e){}
+    return 'SIM' + (k ? ' · kiosk ativo' : ' · kiosk inativo');
+  }catch(e){ return 'n/d'; }
+}
+
 function estadoSW(){
   if(!('serviceWorker' in navigator)) return 'INDISPONIVEL (WebView sem SW)';
   if(!navigator.serviceWorker.controller) return 'NAO CONTROLA (registrado? aguarde/reload)';
@@ -171,6 +259,7 @@ function pintarHud(){
   const linhas = [
     '<b>BlinPlay '+PLAYER_VERSION+'</b>  up '+hhmmss(Date.now()-bootEm),
     'SW.......: '+estadoSW(),
+    'owner....: '+infoOwner(),
     'midia....: '+(NATIVO? 'NATIVA (arquivo do app)' : 'cache do navegador'),
     'persist..: '+persistOK+(NATIVO? '  (irrelevante no modo nativo)' : ''),
     'rede.....: '+(navigator.onLine? 'online':'OFFLINE'),
@@ -184,7 +273,8 @@ function pintarHud(){
     '<b>VEREDITO: '+veredito()+'</b>',
     'envio log: '+statusEnvio,
     'kotlin...: '+relatoKotlin,
-    'captura..: '+snapEstado
+    'captura..: '+snapEstado,
+    'audio....: '+estadoAudio()
   ];
   document.getElementById('hud').innerHTML = linhas.join('\n');
 }
@@ -745,8 +835,35 @@ function tocar(){
 
   if(item.tipo === 'video'){
     const v = document.createElement('video');
+    /* AUDIO: canal de hotel toca COM som.
+       O elemento nasce mudo apenas porque navegador nao concede autoplay
+       com audio sem gesto do usuario — se nascer com som, o play() e
+       recusado e a tela fica parada. A saida e iniciar mudo, pedir play, e
+       desmutar no primeiro sinal de que esta tocando: nesse ponto o
+       autoplay ja foi concedido e o navegador nao bloqueia mais. */
     v.src = url; v.muted = true; v.autoplay = true; v.playsInline = true;
     v.preload = 'auto';
+    v.volume = 1;
+
+    const liberarAudio = ()=>{
+      if(g !== geracao) return;
+      if(!v.muted) return;
+      try{
+        v.muted = false;
+        v.volume = 1;
+      }catch(e){}
+      // se o navegador reagir pausando, devolve o mudo para nao parar a tela:
+      // conteudo tocando sem som e ruim, tela parada e pior
+      setTimeout(()=>{
+        if(g !== geracao) return;
+        if(v.paused){
+          try{ v.muted = true; v.play().catch(()=>{}); }catch(e){}
+          logar('AUDIO recusado pelo navegador: seguindo mudo');
+        }
+      }, 300);
+    };
+    v.addEventListener('playing',    liberarAudio, { once:true });
+    v.addEventListener('timeupdate', liberarAudio, { once:true });
     slide.dataset.video = '1';
 
     /* CANAL COM UM UNICO VIDEO -> LOOP NATIVO.
@@ -933,6 +1050,13 @@ async function sincronizar(primeira){
     try{ localStorage.setItem('blinplay_sched_'+token, JSON.stringify(data)); }catch(e){}
     if(data.canal && data.canal.id) CHANNEL_ID = data.canal.id;
     logar('SYNC ok itens='+((data.padrao||[]).length)+' camp='+((data.campanhas||[]).length));
+
+    // portao: se ainda nao foi liberado, nao toca nada
+    if(primeira && autorizado === null){
+      const ok = await verificarAutorizacao();
+      apresentarBox();
+      if(!ok){ telaAguardandoAutorizacao(); return; }
+    }
     // ORDEM IMPORTA: a midia vai PRIMEIRO. aplicarPrograma() chama tocar()
     // de forma sincrona; se tocar() lancar excecao, ela sobe e o catch abaixo
     // engoliria a chamada de precarregarMidias. Era exatamente o que acontecia.
@@ -1112,6 +1236,7 @@ async function init(){
   iniciarDiag();
   token = params.get('token');
   let code = (params.get('code')||'').trim();
+  if(code){ try{ localStorage.setItem('blinplay_ultimo_code', code); }catch(e){} }
 
   // se o "token" informado for só 6 dígitos, na verdade é um código curto
   if(!code && token && /^\d{6}$/.test(token.trim())){ code = token.trim(); token = null; }
