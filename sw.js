@@ -34,7 +34,7 @@
    - Cota: falha de escrita é capturada, a entrada parcial é apagada e
      o download é reagendado. Nunca fica entrada meio-gravada.
    ============================================================ */
-const VERSION     = 'blinplay-v7';
+const VERSION     = 'blinplay-v8';
 const APP_CACHE   = 'app-' + VERSION;
 const MEDIA_CACHE = 'media-v1';      // preservado entre versões
 
@@ -85,15 +85,34 @@ self.addEventListener('message', (e) => {
   }
 });
 
-function isMedia(url) {
-  return url.includes('/storage/v1/object/public/blinplay-media/');
+/* Antes estas duas funções decidiam por substring na URL INTEIRA. Uma URL de
+   outro domínio contendo o trecho procurado era aceita como nossa: o Service
+   Worker buscava e guardava conteúdo de terceiro no nosso cache, e passava a
+   servi-lo dentro da origem do player. Agora a origem é verificada primeiro. */
+const ORIGEM_STORAGE = 'https://wjyaxmbkdjebulosdtds.supabase.co';
+const ORIGEM_CDN     = 'https://cdn.jsdelivr.net';
+
+function partes(url) {
+  try { return new URL(url); } catch (e) { return null; }
 }
+
+function isMedia(url) {
+  const u = partes(url);
+  if (!u) return false;
+  if (u.origin !== ORIGEM_STORAGE) return false;
+  return u.pathname.startsWith('/storage/v1/object/public/blinplay-media/');
+}
+
 function isShell(url) {
-  if (url.endsWith('player.html')) return true;
-  if (url.indexOf('player.html?') !== -1) return true;
-  if (url.endsWith('/config.js') || url.endsWith('/supabase.js')) return true;
-  if (url.indexOf('supabase-js') !== -1) return true;   // CDN de reserva
-  return false;
+  const u = partes(url);
+  if (!u) return false;
+  if (u.origin === self.location.origin) {
+    return u.pathname.endsWith('/player.html')
+        || u.pathname.endsWith('/config.js')
+        || u.pathname.endsWith('/supabase.js');
+  }
+  // CDN de reserva do supabase-js, apenas na origem esperada
+  return u.origin === ORIGEM_CDN && u.pathname.includes('supabase-js');
 }
 
 /* ---------- download do arquivo inteiro, sem clone e com cota tratada ---------- */
