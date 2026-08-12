@@ -34,13 +34,17 @@
    - Cota: falha de escrita é capturada, a entrada parcial é apagada e
      o download é reagendado. Nunca fica entrada meio-gravada.
    ============================================================ */
-const VERSION     = 'blinplay-v5';
+const VERSION     = 'blinplay-v7';
 const APP_CACHE   = 'app-' + VERSION;
 const MEDIA_CACHE = 'media-v1';      // preservado entre versões
 
+/* B4/C3 — config.js e supabase.js passaram a ser arquivos próprios. Sem eles
+   no cache, um boot offline não teria as credenciais nem a biblioteca, e o
+   modo local do player (C4) nunca seria alcançado. */
 const APP_ASSETS = [
   './player.html',
-  'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2'
+  './config.js',
+  './supabase.js'
 ];
 
 /* tamanho total por URL. Evita reler o arquivo para descobrir o total
@@ -87,7 +91,8 @@ function isMedia(url) {
 function isShell(url) {
   if (url.endsWith('player.html')) return true;
   if (url.indexOf('player.html?') !== -1) return true;
-  if (url.indexOf('supabase-js') !== -1) return true;
+  if (url.endsWith('/config.js') || url.endsWith('/supabase.js')) return true;
+  if (url.indexOf('supabase-js') !== -1) return true;   // CDN de reserva
   return false;
 }
 
