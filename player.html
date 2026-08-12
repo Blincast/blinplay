@@ -70,7 +70,7 @@
 
 <script>
 /* ================= CONFIG ================= */
-const PLAYER_VERSION = 'v4.5d';   // versão do player — aparece na coluna VERSÃO do painel
+const PLAYER_VERSION = 'v5.0d';   // versão do player — aparece na coluna VERSÃO do painel
 const MEDIA_BASE = SB_URL + '/storage/v1/object/public/blinplay-media/';
 const RESYNC_FALLBACK_MS = 15 * 1000;  // FALLBACK rápido: checa a cada 15s quando Realtime NÃO está confirmado
 let resyncTimer = null;
@@ -115,6 +115,13 @@ let portaoInstalado = true;     // vira false se a RPC não existir no banco
    insistir num reload que não resolve. */
 let recargas = 0;
 const MAX_RECARGAS = 3;
+
+/* Sinal EXPLÍCITO de "a programação já foi aplicada".
+   Antes eu usava lastSig como esse sinal — mas canal vazio produz assinatura
+   vazia, então lastSig ficava falso para sempre e o polling reaplicava o
+   programa a cada 2 minutos, sem fim. Estado precisa de variável própria,
+   não de efeito colateral de outra. */
+let programaAplicado = false;
 let esperaAutorizacao = null;
 
 async function verificarAutorizacao(){
@@ -163,7 +170,7 @@ async function verificarAutorizacao(){
 function telaAguardandoAutorizacao(){
   showMsg('Estação aguardando liberação.<br>' +
           '<span style="font-size:.62em;opacity:.75">Código ' +
-          (localStorage.getItem('blinplay_ultimo_code')||'') +
+          escP(localStorage.getItem('blinplay_ultimo_code')||'') +
           ' · libere no painel BlinPlay</span>', true);
   logar('AGUARDANDO AUTORIZACAO');
   clearInterval(esperaAutorizacao);
@@ -224,6 +231,18 @@ let DIAG = false;
 let LOG = [];
 let bootEm = Date.now();
 let voltas = 0, erros = 0, trocas = 0;
+
+/* Escape de HTML também no player.
+   O painel de diagnóstico e a tela de sessão anterior montam markup com
+   dados vindos do banco (caminho da mídia, mensagens de erro). É o próprio
+   box, então o impacto é menor que no painel — mas é a mesma classe de
+   problema, e diagnóstico é onde menos se quer surpresa. */
+function escP(v){
+  if(v === null || v === undefined) return '';
+  return String(v)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
 
 function hhmmss(ms){
   const t=Math.floor(ms/1000);
@@ -352,11 +371,11 @@ function pintarHud(){
     'playlist.: '+playlist.length+' itens, indisp='+indisponiveis.size,
     'midias...: '+auditoria.ok+'/'+auditoria.total+' em cache'+
       (auditoria.faltando.length? '  <b>FALTAM '+auditoria.faltando.length+'</b>' : ''),
-    'tocando..: #'+idx+' '+(item? (item.tipo||'?')+' '+String(item.path||'').slice(-26) : '-'),
+    'tocando..: #'+idx+' '+(item? escP((item.tipo||'?')+' '+String(item.path||'').slice(-26)) : '-'),
     'voltas...: '+voltas+'   trocas: '+trocas+'   erros: '+erros,
     '<b>VEREDITO: '+veredito()+'</b>',
     'envio log: '+statusEnvio,
-    'kotlin...: '+relatoKotlin,
+    'kotlin...: '+escP(relatoKotlin),
     'captura..: '+snapEstado,
     'audio....: '+estadoAudio()
   ];
@@ -373,7 +392,7 @@ function mostrarSessaoAnterior(){
   const el = document.getElementById('prev');
   const ult = prev.slice(-70);
   el.innerHTML = '<h1>SESSAO ANTERIOR — '+prev.length+' eventos (ultimos '+ult.length+
-                 '). Fotografe esta tela. Sai em 90s.</h1>' + ult.join('\n');
+                 '). Fotografe esta tela. Sai em 90s.</h1>' + ult.map(escP).join('\n');
   el.classList.add('show');
   setTimeout(()=> el.classList.remove('show'), 90000);
 }
@@ -384,15 +403,27 @@ function mostrarSessaoAnterior(){
    (OK serve) dentro de 3s alternam o painel. O REGISTRO em disco roda
    sempre, independente do painel estar visivel. */
 let toques = [];
+let hudTimer = null;
+function ligarPinturaHud(){
+  if(hudTimer) return;
+  hudTimer = setInterval(pintarHud, 2000);
+}
+function desligarPinturaHud(){
+  if(!hudTimer) return;
+  clearInterval(hudTimer); hudTimer = null;
+}
+
 function alternarDiag(){
   DIAG = !DIAG;
   const hud = document.getElementById('hud');
   if(DIAG){
     hud.classList.add('show');
     pintarHud();
+    ligarPinturaHud();
     logar('DIAG ligado pelo controle');
   }else{
     hud.classList.remove('show');
+    desligarPinturaHud();
     document.getElementById('prev').classList.remove('show');
     logar('DIAG desligado');
   }
@@ -619,6 +650,27 @@ async function enviarSnap(motivo){
   }
 }
 
+/* ISOLAMENTO POR CANAL DO ESTADO LOCAL.
+   As chaves de código, programação e autorização já eram namespaced por
+   token. As de log, fila de envio e lista de mídias não eram — e ficavam no
+   aparelho depois de trocar o canal do box. A fila pendente do hotel
+   anterior subia com o token NOVO, misturando diagnóstico entre clientes.
+   Aqui, ao detectar troca de canal, o estado do canal anterior é descartado. */
+function limparEstadoDeOutroCanal(){
+  try{
+    const anterior = localStorage.getItem('blinplay_token_atual');
+    if(anterior === token) return;
+    if(anterior){
+      [LOG_KEY, LOG_PREV, FILA_KEY, MIDIAS_KEY].forEach(k=>{
+        try{ localStorage.removeItem(k); }catch(e){}
+      });
+      LOG = [];
+      console.log('[BlinPlay] canal mudou — estado local do canal anterior descartado');
+    }
+    localStorage.setItem('blinplay_token_atual', token || '');
+  }catch(e){}
+}
+
 function iniciarDiag(){
   // rotaciona: o log desta sessao vira "anterior" na proxima abertura
   try{
@@ -660,7 +712,10 @@ function iniciarDiag(){
   if(DIAG){
     document.getElementById('hud').classList.add('show');
   }
-  setInterval(pintarHud, 2000);    // pintarHud sai sozinho se DIAG estiver off
+  /* pintarHud disparava a cada 2 s para sempre, mesmo com o painel escondido
+     — 43 mil execuções por dia sem função nenhuma num aparelho que precisa
+     durar. Agora o timer só existe enquanto o painel está visível. */
+  if(DIAG) ligarPinturaHud();
   setInterval(amostrar, 60000);    // amostra de memoria a cada minuto -> disco
   amostrar();
   logar('DIAG por controle: 4 toques rapidos em qualquer botao');
@@ -1179,6 +1234,7 @@ function aplicarPrograma(data, primeira){
   if(sig !== lastSig || primeira){
     lastSig = sig;
     playlist = nova;
+    programaAplicado = true;
     if(primeira || idx >= playlist.length) idx = 0;
     tocar();
   }
@@ -1374,7 +1430,7 @@ function ligarFallback(){
               nada que aplicar direto já não resolva.
            2) Teto de recargas por sessão, para que nenhum caminho futuro
               consiga transformar isso num laço outra vez. */
-        if(!lastSig){
+        if(!programaAplicado){
           logar('PROGRAMA ainda nao aplicado — aplicando em vez de recarregar');
           aplicarPrograma(data, true);
           return;
@@ -1453,6 +1509,10 @@ async function init(){
 
   showMsg('Carregando programação…', true);
 
+  // Token definitivo em mãos: descarta o estado local de um canal anterior
+  // ANTES de qualquer envio, para não subir a fila do hotel errado.
+  limparEstadoDeOutroCanal();
+
   // ARMAZENAMENTO PERSISTENTE: sem isso o Android tem licença para descartar
   // o cache inteiro sob pressão de storage — e todo o offline vira sorte.
   try{
@@ -1468,7 +1528,19 @@ async function init(){
   // zerar qualquer resíduo do WebView. O reload funciona offline (o SW
   // serve o shell do cache com ignoreSearch).
   setInterval(()=>{
-    const h = new Date().getHours();
+    /* Fuso FIXO em America/Sao_Paulo, não o do aparelho.
+       O inventário da frota mostrou boxes configurados como
+       America/Argentina/Buenos_Aires e America/Santiago — neles, "4h da
+       manhã" cairia em outra hora local, possivelmente com hóspede acordado.
+       A operação é brasileira; a janela de manutenção também deve ser. */
+    let h;
+    try{
+      h = parseInt(new Intl.DateTimeFormat('pt-BR', {
+        hour: 'numeric', hour12: false, timeZone: 'America/Sao_Paulo'
+      }).format(new Date()), 10);
+    }catch(e){
+      h = new Date().getHours();   // aparelho sem suporte a Intl: usa o local
+    }
     if(h === 4) location.reload();
   }, 55 * 60 * 1000);
 
