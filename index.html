@@ -397,14 +397,19 @@ function escA(v){
 function escJ(v){
   return String(v === null || v === undefined ? '' : v)
     .replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'\\"')
-    .replace(/</g,'\\u003c').replace(/\r?\n/g,' ');
+    .replace(/</g,'\\u003c')
+    /* U+2028 e U+2029 são terminadores de linha para o interpretador
+       JavaScript. Dentro de um handler inline, eles podem encerrar a string
+       e deixar o resto do valor virar código. Só \r\n não bastava. */
+    .replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029')
+    .replace(/\r?\n/g,' ');
 }
 
 /* Versão do painel. Aparece na barra lateral e no console.
    Existe porque, sem ela, não há como saber qual index.html está publicado —
    e subir um arquivo antigo por engano é indistinguível de um recurso que
    não funcionou. */
-const PAINEL_VERSAO = 'v2.4';
+const PAINEL_VERSAO = 'v2.6';
 console.log('[BlinPlay] painel', PAINEL_VERSAO);
 
 /* ---------------- NAVEGAÇÃO ---------------- */
@@ -673,7 +678,7 @@ const VIEWS = {
              <b>Falta rodar o SQL do inventário.</b><br>
              Rode <code>dispositivos.sql</code> no SQL Editor do Supabase para criar as colunas
              <code>mac</code>, <code>observacao</code>, <code>ultimo_ip</code> e <code>storage_total</code>.
-             <div style="margin-top:8px;color:var(--mut);font-size:12px">Detalhe técnico: ${error.message}</div>
+             <div style="margin-top:8px;color:var(--mut);font-size:12px">Detalhe técnico: ${esc(error.message)}</div>
            </div>`;
     }
 
@@ -689,12 +694,12 @@ const VIEWS = {
       const gb = n => n==null ? '—' : (n/1073741824).toFixed(1)+' GB';
       const nomeEsc = String(c.nome||'').replace(/"/g,'&quot;');
       return `<tr class="row">
-        <td><div class="est-name">${hotel}</div>
-            <div class="est-sub">${cnpj||'sem CNPJ'}</div></td>
+        <td><div class="est-name">${esc(hotel)}</div>
+            <div class="est-sub">${esc(cnpj||'sem CNPJ')}</div></td>
         <td><div class="est-name" style="font-size:13px">${esc(c.nome||'—')}</div>
             <div class="est-sub">código ${esc(c.codigo_curto||'—')}</div></td>
         <td style="font-family:ui-monospace,monospace;font-size:12px;color:${c.mac?'var(--txt)':'#5f5f68'}">
-            ${c.mac || 'não cadastrado'}</td>
+            ${esc(c.mac || 'não cadastrado')}</td>
         <td style="color:var(--mut);font-size:12px">${esc(c.ultimo_ip||'—')}</td>
         <td style="color:var(--mut);font-size:12px">${pct!==null ? pct+'%<div class="est-sub">'+gb(c.storage_livre)+' livre</div>' : '—'}</td>
         <td><span class="stat ${on?'on':'off'}"><span class="dot ${on?'on':'off'}"></span>${on?'Online':'Offline'}</span>
@@ -750,14 +755,14 @@ const VIEWS = {
         const pend = (c.autorizado === false);
         return `<tr class="row">
           <td><div class="est-name">${esc(c.accounts?c.accounts.nome:'—')}${pend?' <span style="background:#332a10;color:#F5C518;font-size:10px;padding:2px 7px;border-radius:12px;vertical-align:middle">aguardando liberação</span>':''}</div>
-              <div class="est-sub">Canal: ${esc(c.nome)}${c.ultimo_ip?' · '+c.ultimo_ip:''}</div>
+              <div class="est-sub">Canal: ${esc(c.nome)}${c.ultimo_ip?' · '+esc(c.ultimo_ip):''}</div>
               <div style="margin-top:4px">${tagsHtml}</div></td>
           <td><span class="stat ${on?'on':'off'}"><span class="dot ${on?'on':'off'}"></span>${on?'Online':'Offline'}</span></td>
           <td style="color:var(--mut)">${visto}</td>
           <td style="color:var(--mut)">${esc(c.player_version||'—')}</td>
           <td style="white-space:nowrap">
             <button class="mini" onclick="verTela('${c.id}','${escJ(c.nome)}')">◱ Ver tela</button>
-            ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick="acessoRemoto('${c.id}','${escJ(c.nome)}')" title="${c.rustdesk_id?'RustDesk '+c.rustdesk_id:'RustDesk não configurado'}">⧉ Remoto</button>`}
+            ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick="acessoRemoto('${c.id}','${escJ(c.nome)}')" title="${c.rustdesk_id?'RustDesk '+escA(c.rustdesk_id):'RustDesk não configurado'}">⧉ Remoto</button>`}
             <button class="mini" onclick="pedirRefresh('${c.id}','${escJ(c.nome)}')">⟳ Atualizar tela</button>
             ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick='editarTags("${c.id}","${escA(c.nome)}",${escA(JSON.stringify(tags))})'>⌗ Tags</button>`}
             ${COLS_EXTRAS===false ? '' : pend
@@ -819,13 +824,13 @@ const VIEWS = {
         return `<tr class="row" style="${c.ativo?'':'opacity:.5'}">
           <td><div class="est-name">${esc(c.accounts?c.accounts.nome:'—')}</div><div class="est-sub">Canal: ${esc(c.nome)}</div></td>
           <td><span class="stat ${online?'on':'off'}"><span class="dot ${online?'on':'off'}"></span>${online?'Online':'Offline'}</span></td>
-          <td><span style="font-family:monospace;font-size:18px;letter-spacing:2px;color:var(--gold,#F5A800);font-weight:700">${cod}</span></td>
+          <td><span style="font-family:monospace;font-size:18px;letter-spacing:2px;color:var(--gold,#F5A800);font-weight:700">${esc(cod)}</span></td>
           <td style="color:var(--mut)">${visto}</td>
           <td style="color:var(--mut)">${esc(c.player_version||'—')}
               <div class="est-sub">${nProg? nProg+' na programação' : 'sem programação'}${c.ativo?'':' · INATIVO'}</div></td>
           <td style="white-space:nowrap">
             <button class="mini" onclick="copiarCodigo('${cod}')">⧉ Código</button>
-            <button class="mini" onclick="copiarURL('${url}')">⧉ URL</button>
+            <button class="mini" onclick="copiarURL('${escJ(url)}')">⧉ URL</button>
             <button class="mini" onclick='renomearCanal("${c.id}","${escA(c.nome)}")'>✎ Renomear</button>
             <button class="mini" onclick='alternarCanal("${c.id}","${escA(c.nome)}",${c.ativo?'false':'true'})'>${c.ativo?'⊘ Inativar':'✓ Reativar'}</button>
             <button class="mini danger" onclick='excluirCanal("${c.id}","${escA(c.nome)}",${nPl[c.id]||0})'>🗑</button>
@@ -896,9 +901,9 @@ const VIEWS = {
         return `<div class="camp">
           <div class="camp-ic" style="background:rgba(245,168,0,.18);border:1px solid rgba(245,168,0,.4)">◷</div>
           <div class="camp-main"><div class="cn">${esc(c.nome)}</div><div class="cd">${di} → ${df} · ${esc(c.accounts?c.accounts.nome:'')}</div></div>
-          <span class="freq">1 a cada ${c.frequencia_a_cada}</span>
+          <span class="freq">1 a cada ${esc(c.frequencia_a_cada)}</span>
           <span class="badge ${badge}">${badge==='live'?'● ':''}${st}</span>
-          <button class="mini" onclick="togglePausaCampanha('${c.id}',${c.ativo})">${c.ativo?'⏸ Pausar':'▶ Retomar'}</button>
+          <button class="mini" onclick="togglePausaCampanha('${c.id}',${esc(c.ativo)})">${c.ativo?'⏸ Pausar':'▶ Retomar'}</button>
           <button class="mini" onclick="editarCampanha('${c.id}')">Editar</button>
           <button class="mini danger" onclick="excluirCampanha('${c.id}','${escJ(c.nome)}')">Excluir</button>
         </div>`;
@@ -980,8 +985,8 @@ const VIEWS = {
           : '<span style="color:#c00">sem hotel vinculado</span>';
         const nEsc = String(p.nome||'').replace(/"/g,'&quot;');
         return `<tr class="row" style="${ativo?'':'opacity:.55'}">
-          <td><div class="est-name">${esc(p.nome||'—')}</div><div class="est-sub">${p.email||''}</div></td>
-          <td><span class="badge sched">${papelLabel[p.role]||p.role}</span></td>
+          <td><div class="est-name">${esc(p.nome||'—')}</div><div class="est-sub">${esc(p.email||'')}</div></td>
+          <td><span class="badge sched">${esc(papelLabel[p.role]||p.role)}</span></td>
           <td><span class="badge ${ativo?'live':'paused'}">${ativo?'Ativo':'Inativo'}</span></td>
           <td>${listaH}</td>
           <td style="white-space:nowrap">
@@ -1177,10 +1182,10 @@ function agDia(iso){
       const di=dataBR(c.data_inicio), df=dataBR(c.data_fim);
       const hotel=c.accounts?c.accounts.nome:(CLI_ACC?CLI_ACC.nome:'')   /* M3 — let de topo não vira propriedade de window */;
       return `<div class="ag-cd"><div class="ct"><span class="badge ${st}">${st==='live'?'● ':''}${stTxt[st]}</span>
-        <span class="nm">${(c.nome||'').replace(/</g,'&lt;')}</span></div>
+        <span class="nm">${esc(c.nome)}</span></div>
         <div class="meta">
           <div>Período<b>${di} → ${df}</b></div>
-          <div>Frequência<b>1 a cada ${c.frequencia_a_cada}</b></div>
+          <div>Frequência<b>1 a cada ${esc(c.frequencia_a_cada)}</b></div>
           ${hotel?`<div>Hotel<b>${hotel}</b></div>`:''}
         </div></div>`;
     }).join('')+'</div>';
@@ -1577,10 +1582,10 @@ function mediaPanelReal(list, isAdmin){
       </div>
       <div class="minfo">
         <div class="mt">${esc(m.nome)}</div>
-        <div class="ms">${isVid? fmtDur(m.duracao_seg) : (m.duracao_seg!=null ? m.duracao_seg+'s na tela' : 'imagem')}${tam?' · '+tam:''}${isAdmin&&m.accounts?' · '+m.accounts.nome:''}</div>
+        <div class="ms">${isVid? fmtDur(m.duracao_seg) : (m.duracao_seg!=null ? m.duracao_seg+'s na tela' : 'imagem')}${tam?' · '+tam:''}${isAdmin&&m.accounts?' · '+esc(m.accounts.nome):''}</div>
         <div class="mactions">
-          <button class="mini" onclick="editarMidia('${m.id}','${escJ(m.nome)}',${m.duracao_seg},'${m.tipo}')">✎ Editar</button>
-          <button class="mini danger" onclick="excluirMidia('${m.id}','${m.storage_path}','${escJ(m.nome)}')">🗑 Excluir</button>
+          <button class="mini" onclick="editarMidia('${m.id}','${escJ(m.nome)}',${esc(m.duracao_seg)},'${m.tipo}')">✎ Editar</button>
+          <button class="mini danger" onclick="excluirMidia('${m.id}','${escJ(m.storage_path)}','${escJ(m.nome)}')">🗑 Excluir</button>
         </div>
       </div>
     </div>`;
@@ -1605,8 +1610,8 @@ function editarMidia(id, nome, dur, tipo){
   abrirModal(`
     <h3>Editar mídia</h3>
     <div class="fsub">Altere o nome${isVid?'':' ou o tempo na tela'}.</div>
-    <div class="fld"><label>Nome / título</label><input id="em_nome" value="${(nome||'').replace(/"/g,'&quot;')}"></div>
-    ${isVid?'':`<div class="fld"><label>Tempo na tela (segundos)</label><input id="em_dur" type="number" value="${dur}" min="3" max="60"></div>`}
+    <div class="fld"><label>Nome / título</label><input id="em_nome" value="${escA(nome)}"></div>
+    ${isVid?'':`<div class="fld"><label>Tempo na tela (segundos)</label><input id="em_dur" type="number" value="${escA(dur)}" min="3" max="60"></div>`}
     <div id="em_msg" class="fmsg"></div>
     <div class="form-actions">
       <button class="fa-cancel" onclick="fecharModal()">Cancelar</button>
@@ -1865,10 +1870,10 @@ async function editarCampanha(id){
     <div class="fld"><label>Conta (hotel)</label><select id="cp_acc" disabled>${opts}</select></div>
     <div class="fld"><label>Nome da campanha</label><input id="cp_nome" value="${escA(c.nome)}"></div>
     <div style="display:flex;gap:10px">
-      <div class="fld" style="flex:1"><label>Início</label><input id="cp_ini" type="date" value="${c.data_inicio}"></div>
-      <div class="fld" style="flex:1"><label>Fim</label><input id="cp_fim" type="date" value="${c.data_fim}"></div>
+      <div class="fld" style="flex:1"><label>Início</label><input id="cp_ini" type="date" value="${escA(c.data_inicio)}"></div>
+      <div class="fld" style="flex:1"><label>Fim</label><input id="cp_fim" type="date" value="${escA(c.data_fim)}"></div>
     </div>
-    <div class="fld"><label>Frequência da campanha no rodízio</label><input id="cp_freq" type="number" value="${c.frequencia_a_cada}" min="1" max="20"><div style="font-size:11px;color:var(--mut);margin-top:5px">Quanto menor o número, mais a campanha aparece. Ela sempre entra ao menos 1x por volta.</div></div>
+    <div class="fld"><label>Frequência da campanha no rodízio</label><input id="cp_freq" type="number" value="${esc(c.frequencia_a_cada)}" min="1" max="20"><div style="font-size:11px;color:var(--mut);margin-top:5px">Quanto menor o número, mais a campanha aparece. Ela sempre entra ao menos 1x por volta.</div></div>
     <div class="fld"><label>Mídias da campanha</label><div id="cp_midias" class="checkbox-grid">…</div></div>
     <div class="fld"><label>Toca em quais canais</label><div id="cp_canais" class="checkbox-grid">…</div></div>
     <div id="cp_msg" class="fmsg"></div>
@@ -2293,10 +2298,32 @@ async function salvarMidia(){
     dur = parseInt(val('nm_dur')||'8',10);
   }
 
+  /* Sem limite de tamanho nem verificação de tipo, um upload podia encher a
+     cota do projeto ou colocar no canal um arquivo que o player não toca. */
+  const TIPOS_OK = ['video/mp4','video/webm','image/jpeg','image/png','image/webp','image/gif'];
+  const MAX_BYTES = 500 * 1024 * 1024;
+  if(f.size > MAX_BYTES){
+    msg.className='fmsg err';
+    msg.textContent='Arquivo muito grande ('+(f.size/1048576).toFixed(0)+' MB). O limite é 500 MB.';
+    return;
+  }
+  if(f.type && !TIPOS_OK.includes(f.type)){
+    msg.className='fmsg err';
+    msg.textContent='Tipo não suportado ('+esc(f.type)+'). Use MP4, WebM, JPEG, PNG, WebP ou GIF.';
+    return;
+  }
+
   msg.textContent='Enviando arquivo…';
   try{
     // caminho: {account_id}/{timestamp}_{nome-limpo}.{ext}
-    const ext=(f.name.split('.').pop()||'bin').toLowerCase();
+    /* A extensão vinha crua de f.name.split('.').pop(). O nome do arquivo é
+       escolhido por quem envia, e um nome com barras e ".." injeta segmentos
+       no caminho — que é exatamente o que separa a pasta de cada hotel no
+       Storage. Aqui só sobrevivem letras e dígitos, no máximo 5. */
+    const ext=((f.name.split('.').pop()||'bin')
+                 .toLowerCase()
+                 .replace(/[^a-z0-9]/g,'')
+                 .slice(0,5)) || 'bin';
     const limpo=nome.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,40)||'midia';
     const path=`${account_id}/${Date.now()}_${limpo}.${ext}`;
 
