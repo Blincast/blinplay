@@ -70,7 +70,7 @@
 
 <script>
 /* ================= CONFIG ================= */
-const PLAYER_VERSION = 'v4.4d';   // versão do player — aparece na coluna VERSÃO do painel
+const PLAYER_VERSION = 'v4.5d';   // versão do player — aparece na coluna VERSÃO do painel
 const MEDIA_BASE = SB_URL + '/storage/v1/object/public/blinplay-media/';
 const RESYNC_FALLBACK_MS = 15 * 1000;  // FALLBACK rápido: checa a cada 15s quando Realtime NÃO está confirmado
 let resyncTimer = null;
@@ -108,6 +108,13 @@ function tentarModoLocal(code, tok){
    frota atual nao para. */
 let autorizado = null;          // null = ainda nao verificado
 let portaoInstalado = true;     // vira false se a RPC não existir no banco
+
+/* Teto de recargas por sessão. Recarregar é uma ferramenta legítima, mas
+   nenhuma condição justifica recarregar sem parar: se o teto for atingido,
+   é sinal de que a lógica está errada, e ficar tocando vale mais do que
+   insistir num reload que não resolve. */
+let recargas = 0;
+const MAX_RECARGAS = 3;
 let esperaAutorizacao = null;
 
 async function verificarAutorizacao(){
@@ -336,6 +343,7 @@ function pintarHud(){
     'SW.......: '+estadoSW(),
     'owner....: '+infoOwner(),
     'portao...: '+(portaoInstalado ? (autorizado===true?'autorizado':'aguardando') : 'nao instalado'),
+    'recargas.: '+recargas+'/'+MAX_RECARGAS,
     'midia....: '+(NATIVO? 'NATIVA (arquivo do app)' : 'cache do navegador'),
     'persist..: '+persistOK+(NATIVO? '  (irrelevante no modo nativo)' : ''),
     'rede.....: '+(navigator.onLine? 'online':'OFFLINE'),
@@ -1352,7 +1360,35 @@ function ligarFallback(){
       const { data } = await sb.rpc('get_player_schedule', { p_token: token });
       if(data && data.ok!==false){
         const novaSig = assinatura(montarPlaylist(data));
-        if(novaSig !== lastSig){ location.reload(); return; }
+
+        /* LAÇO DE RELOAD — causa da queda de hoje.
+           Se o sincronizar() retornasse antes do aplicarPrograma() por
+           qualquer motivo, lastSig ficava vazio. Aqui a assinatura nova
+           sempre diferia da vazia, o player concluía "a programação mudou" e
+           recarregava. No reload tudo se repetia: BOOT a cada 2 minutos, sem
+           nunca chegar a tocar.
+
+           Duas travas:
+           1) Programa nunca aplicado (lastSig vazio) não é motivo para
+              recarregar — é motivo para APLICAR. Recarregar não resolveria
+              nada que aplicar direto já não resolva.
+           2) Teto de recargas por sessão, para que nenhum caminho futuro
+              consiga transformar isso num laço outra vez. */
+        if(!lastSig){
+          logar('PROGRAMA ainda nao aplicado — aplicando em vez de recarregar');
+          aplicarPrograma(data, true);
+          return;
+        }
+        if(novaSig !== lastSig){
+          if(recargas >= MAX_RECARGAS){
+            logar('RELOAD bloqueado: teto de '+MAX_RECARGAS+' por sessao atingido');
+            aplicarPrograma(data, false);
+            return;
+          }
+          recargas++;
+          logar('PROGRAMA mudou — recarregando ('+recargas+'/'+MAX_RECARGAS+')');
+          location.reload(); return;
+        }
         // reporta presença (mantém "online" e atualiza último acesso)
         sb.rpc('reportar_versao', { p_token: token, p_versao: PLAYER_VERSION }).catch(()=>{});   // M12: promise não aguardada precisa de .catch
       }
