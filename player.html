@@ -70,7 +70,7 @@
 
 <script>
 /* ================= CONFIG ================= */
-const PLAYER_VERSION = 'v4.3d';   // versão do player — aparece na coluna VERSÃO do painel
+const PLAYER_VERSION = 'v4.4d';   // versão do player — aparece na coluna VERSÃO do painel
 const MEDIA_BASE = SB_URL + '/storage/v1/object/public/blinplay-media/';
 const RESYNC_FALLBACK_MS = 15 * 1000;  // FALLBACK rápido: checa a cada 15s quando Realtime NÃO está confirmado
 let resyncTimer = null;
@@ -107,6 +107,7 @@ function tentarModoLocal(code, tok){
    Canais que ja existiam foram marcados como autorizados no SQL, entao a
    frota atual nao para. */
 let autorizado = null;          // null = ainda nao verificado
+let portaoInstalado = true;     // vira false se a RPC não existir no banco
 let esperaAutorizacao = null;
 
 async function verificarAutorizacao(){
@@ -124,16 +125,29 @@ async function verificarAutorizacao(){
     }catch(e){}
     return autorizado;
   }catch(e){
-    /* A4 — antes, QUALQUER falha de RPC liberava o box. Isso anulava a
-       proteção: bastava uma instabilidade de rede no primeiro boot para um
-       box não autorizado começar a exibir o conteúdo de outro hotel.
-       Agora a decisão depende do que já se sabia:
+    const msg = String((e && e.message) || e);
+
+    /* PORTÃO NÃO INSTALADO NO BANCO.
+       Se a RPC não existe, o recurso simplesmente não foi habilitado neste
+       projeto — e nesse caso ele não deve bloquear nada. Endurecer o A4 sem
+       essa verificação derrubou um box de produção: a RPC devolvia 404, o
+       player tratava como "não autorizado" e ficava na tela de espera,
+       reiniciando a cada dois minutos.
+       Portão que não existe não reprova ninguém. */
+    if(/Could not find the function|PGRST202|does not exist|404/i.test(msg)){
+      portaoInstalado = false;
+      autorizado = true;
+      logar('AUTORIZACAO: portao nao instalado no banco — seguindo sem bloqueio');
+      return true;
+    }
+
+    /* A4 — falha de REDE com o portão instalado:
          · já foi autorizado alguma vez  -> continua tocando (offline legítimo)
          · nunca foi autorizado          -> espera. Tela de espera é ruim;
            conteúdo de um hotel na tela de outro é pior. */
     let jaFoi = false;
     try{ jaFoi = localStorage.getItem('blinplay_autorizado_'+token) === '1'; }catch(err){}
-    logar('AUTORIZACAO nao verificada ('+String((e&&e.message)||e).slice(0,40)+
+    logar('AUTORIZACAO nao verificada ('+msg.slice(0,40)+
           ') — '+(jaFoi?'liberado por autorizacao anterior':'BLOQUEADO, nunca autorizado'));
     return jaFoi;
   }
@@ -151,6 +165,13 @@ function telaAguardandoAutorizacao(){
        é "falha para aberto" — então uma instabilidade de rede liberava um box
        que nunca foi autorizado. Aqui só sai da espera com autorizado===true. */
     await verificarAutorizacao();
+    if(!portaoInstalado){
+      clearInterval(esperaAutorizacao);
+      logar('AUTORIZACAO: portao ausente — liberando');
+      hideMsg();
+      sincronizar(true);
+      return;
+    }
     if(autorizado === true){
       clearInterval(esperaAutorizacao);
       logar('AUTORIZADO — iniciando');
@@ -314,6 +335,7 @@ function pintarHud(){
     '<b>BlinPlay '+PLAYER_VERSION+'</b>  up '+hhmmss(Date.now()-bootEm),
     'SW.......: '+estadoSW(),
     'owner....: '+infoOwner(),
+    'portao...: '+(portaoInstalado ? (autorizado===true?'autorizado':'aguardando') : 'nao instalado'),
     'midia....: '+(NATIVO? 'NATIVA (arquivo do app)' : 'cache do navegador'),
     'persist..: '+persistOK+(NATIVO? '  (irrelevante no modo nativo)' : ''),
     'rede.....: '+(navigator.onLine? 'online':'OFFLINE'),
