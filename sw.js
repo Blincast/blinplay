@@ -26,7 +26,7 @@
      para atender a primeiríssima exibição de um arquivo ainda não
      baixado. Depois de cacheado, a rede não é mais tocada.
    - Revalidação: o player manda a lista de mídias a cada sync. O SW
-     compara ETag/tamanho por HEAD e rebaixa só o que mudou no portal.
+     rebaixa apenas o que ainda não está em cache; endereços de mídia são imutáveis.
      É assim que "trocar a mídia no portal" se propaga sem reload.
    - Shell (player.html, sdk): rede primeiro, cache como rede de
      segurança — com ignoreSearch, para que um reload OFFLINE de
@@ -34,7 +34,7 @@
    - Cota: falha de escrita é capturada, a entrada parcial é apagada e
      o download é reagendado. Nunca fica entrada meio-gravada.
    ============================================================ */
-const VERSION     = 'blinplay-v8';
+const VERSION     = 'blinplay-v9';
 const APP_CACHE   = 'app-' + VERSION;
 const MEDIA_CACHE = 'media-v1';      // preservado entre versões
 
@@ -52,8 +52,6 @@ const APP_ASSETS = [
 const tamanhos = new Map();
 /* downloads em andamento, para não baixar o mesmo arquivo em paralelo */
 const inflight = new Map();
-/* ETag por URL, para detectar mídia trocada no portal */
-const etags = new Map();
 
 self.addEventListener('install', (e) => {
   self.skipWaiting();
@@ -124,7 +122,6 @@ function baixarInteiro(cache, url) {
       const resp = await fetch(url, { cache: 'no-store' });
       if (!resp || resp.status !== 200) return false;
       const cl  = resp.headers.get('Content-Length');
-      const tag = resp.headers.get('ETag');
       try {
         // sem clone(): o corpo vai direto pro cache, nada é bufferizado
         await cache.put(url, resp);
@@ -135,7 +132,6 @@ function baixarInteiro(cache, url) {
         return false;
       }
       if (cl && !isNaN(+cl) && +cl > 0) tamanhos.set(url, +cl);
-      if (tag) etags.set(url, tag);
       return true;
     } catch (err) {
       return false;
@@ -299,35 +295,34 @@ async function serveMedia(req) {
 }
 
 /* ---------- revalidação: mídia trocada no portal ----------
-   HEAD barato por arquivo. Se ETag ou tamanho mudou, apaga e rebaixa.
+   Garante que toda mídia da programação esteja em cache.
    Se não há rede, falha em silêncio e o cache atual continua tocando. */
 async function revalidarLista(urls) {
+  /* REVALIDAÇÃO POR ETag REMOVIDA.
+     A comparação de ETag e Content-Length existia para detectar um arquivo
+     substituído no mesmo endereço. Duas verificações mostraram que ela não
+     funcionava e nem precisava funcionar:
+
+     1. O Storage não envia ETag ao navegador — não há
+        Access-Control-Expose-Headers na resposta — de modo que a comparação
+        de ETag nunca era verdadeira.
+     2. O painel envia com upsert:false e o caminho inclui a marca de tempo,
+        portanto cada envio cria um endereço NOVO. Substituição no mesmo
+        caminho não existe no produto. E como o caminho muda, a assinatura da
+        programação muda, e a sincronização normal já resolve.
+
+     Ou seja: uma requisição HEAD por arquivo, por ciclo, em cada um dos ~150
+     boxes, para uma comparação que jamais dispararia. Permanece apenas o que
+     tem função: baixar o que ainda não está em cache. */
   const cache = await caches.open(MEDIA_CACHE);
   for (const url of urls) {
     try {
       const tem = await cache.match(url);
-      if (!tem) { await baixarInteiro(cache, url); continue; }
-
-      const h = await fetch(url, { method: 'HEAD', cache: 'no-store' });
-      if (!h || !h.ok) continue;
-
-      const tagNovo = h.headers.get('ETag');
-      const clNovo  = h.headers.get('Content-Length');
-      const tagVelho = etags.get(url) || tem.headers.get('ETag');
-      const clVelho  = tamanhos.get(url) || tem.headers.get('Content-Length');
-
-      const mudouTag = tagNovo && tagVelho && tagNovo !== tagVelho;
-      const mudouCl  = clNovo && clVelho && String(clNovo) !== String(clVelho);
-
-      if (mudouTag || mudouCl) {
-        await cache.delete(url);
-        tamanhos.delete(url);
-        etags.delete(url);
-        await baixarInteiro(cache, url);
-      }
+      if (!tem) await baixarInteiro(cache, url);
     } catch (e) { /* sem rede: mantém o cache */ }
   }
 }
+
 
 self.addEventListener('fetch', (e) => {
   const req = e.request;
