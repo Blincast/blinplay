@@ -415,7 +415,7 @@ function escJ(v){
    Existe porque, sem ela, não há como saber qual index.html está publicado —
    e subir um arquivo antigo por engano é indistinguível de um recurso que
    não funcionou. */
-const PAINEL_VERSAO = 'v2.7';
+const PAINEL_VERSAO = 'v2.9';
 console.log('[BlinPlay] painel', PAINEL_VERSAO);
 
 /* ---------------- NAVEGAÇÃO ---------------- */
@@ -769,10 +769,10 @@ const VIEWS = {
             <button class="mini" onclick="verTela('${c.id}','${escJ(c.nome)}')">◱ Ver tela</button>
             ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick="acessoRemoto('${c.id}','${escJ(c.nome)}')" title="${c.rustdesk_id?'RustDesk '+escA(c.rustdesk_id):'RustDesk não configurado'}">⧉ Remoto</button>`}
             <button class="mini" onclick="pedirRefresh('${c.id}','${escJ(c.nome)}')">⟳ Atualizar tela</button>
-            ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick='editarTags("${c.id}","${escA(c.nome)}",${escA(JSON.stringify(tags))})'>⌗ Tags</button>`}
+            ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick='editarTags("${escJ(c.id)}","${escJ(c.nome)}","${escJ(JSON.stringify(tags))}")'>⌗ Tags</button>`}
             ${COLS_EXTRAS===false ? '' : pend
-              ? `<button class="mini" style="background:#332a10;border-color:#4a3d1c;color:#F5C518" onclick='autorizar("${c.id}",true,"${escA(c.nome)}")'>✓ Autorizar</button>`
-              : `<button class="mini" onclick='autorizar("${c.id}",false,"${escA(c.nome)}")' title="revogar autorização">⊘</button>`}
+              ? `<button class="mini" style="background:#332a10;border-color:#4a3d1c;color:#F5C518" onclick='autorizar("${escJ(c.id)}",true,"${escJ(c.nome)}")'>✓ Autorizar</button>`
+              : `<button class="mini" onclick='autorizar("${escJ(c.id)}",false,"${escJ(c.nome)}")' title="revogar autorização">⊘</button>`}
           </td>
         </tr>`;
       }).join('');
@@ -836,9 +836,9 @@ const VIEWS = {
           <td style="white-space:nowrap">
             <button class="mini" onclick="copiarCodigo('${cod}')">⧉ Código</button>
             <button class="mini" onclick="copiarURL('${escJ(url)}')">⧉ URL</button>
-            <button class="mini" onclick='renomearCanal("${c.id}","${escA(c.nome)}")'>✎ Renomear</button>
-            <button class="mini" onclick='alternarCanal("${c.id}","${escA(c.nome)}",${c.ativo?'false':'true'})'>${c.ativo?'⊘ Inativar':'✓ Reativar'}</button>
-            <button class="mini danger" onclick='excluirCanal("${c.id}","${escA(c.nome)}",${nPl[c.id]||0})'>🗑</button>
+            <button class="mini" onclick='renomearCanal("${escJ(c.id)}","${escJ(c.nome)}")'>✎ Renomear</button>
+            <button class="mini" onclick='alternarCanal("${escJ(c.id)}","${escJ(c.nome)}",${c.ativo?'false':'true'})'>${c.ativo?'⊘ Inativar':'✓ Reativar'}</button>
+            <button class="mini danger" onclick='excluirCanal("${escJ(c.id)}","${escJ(c.nome)}",${Number(nPl[c.id])||0})'>🗑</button>
           </td></tr>`;
       }).join('');
     }
@@ -904,7 +904,7 @@ const VIEWS = {
           <div class="camp-main"><div class="cn">${esc(c.nome)}</div><div class="cd">${di} → ${df} · ${esc(c.accounts?c.accounts.nome:'')}</div></div>
           <span class="freq">1 a cada ${esc(c.frequencia_a_cada)}</span>
           <span class="badge ${badge}">${badge==='live'?'● ':''}${st}</span>
-          <button class="mini" onclick="togglePausaCampanha('${c.id}',${esc(c.ativo)})">${c.ativo?'⏸ Pausar':'▶ Retomar'}</button>
+          <button class="mini" onclick="togglePausaCampanha('${escJ(c.id)}',${c.ativo ? 'true' : 'false'})">${c.ativo?'⏸ Pausar':'▶ Retomar'}</button>
           <button class="mini" onclick="editarCampanha('${c.id}')">Editar</button>
           <button class="mini danger" onclick="excluirCampanha('${c.id}','${escJ(c.nome)}')">Excluir</button>
         </div>`;
@@ -1584,7 +1584,7 @@ function mediaPanelReal(list, isAdmin){
         <div class="mt">${esc(m.nome)}</div>
         <div class="ms">${isVid? fmtDur(m.duracao_seg) : (m.duracao_seg!=null ? m.duracao_seg+'s na tela' : 'imagem')}${tam?' · '+tam:''}${isAdmin&&m.accounts?' · '+esc(m.accounts.nome):''}</div>
         <div class="mactions">
-          <button class="mini" onclick="editarMidia('${m.id}','${escJ(m.nome)}',${esc(m.duracao_seg)},'${m.tipo}')">✎ Editar</button>
+          <button class="mini" onclick="editarMidia('${escJ(m.id)}','${escJ(m.nome)}',${m.duracao_seg == null ? 'null' : Number(m.duracao_seg)},'${escJ(m.tipo)}')">✎ Editar</button>
           <button class="mini danger" onclick="excluirMidia('${m.id}','${escJ(m.storage_path)}','${escJ(m.nome)}')">🗑 Excluir</button>
         </div>
       </div>
@@ -1605,13 +1605,20 @@ async function excluirMidia(id, path, nome){
   }catch(ex){ alert('Erro ao excluir: '+(ex.message||ex)); }
 }
 
+/* dur pode chegar null: linhas antigas e vídeos nunca gravaram duração.
+   Antes, a emissão passava esc(dur) e null virava string vazia, produzindo
+   editarMidia('id','nome',,'image') — vaga de argumento vazia, erro de
+   sintaxe, e o botão Editar não abria nada. esc() serve para texto em HTML,
+   não para literal em argumento de função. */
 function editarMidia(id, nome, dur, tipo){
   const isVid = tipo==='video';
+  const DUR_PADRAO = 8;
+  const durNum = (dur == null || isNaN(Number(dur))) ? DUR_PADRAO : Number(dur);
   abrirModal(`
     <h3>Editar mídia</h3>
     <div class="fsub">Altere o nome${isVid?'':' ou o tempo na tela'}.</div>
     <div class="fld"><label>Nome / título</label><input id="em_nome" value="${escA(nome)}"></div>
-    ${isVid?'':`<div class="fld"><label>Tempo na tela (segundos)</label><input id="em_dur" type="number" value="${escA(dur)}" min="3" max="60"></div>`}
+    ${isVid?'':`<div class="fld"><label>Tempo na tela (segundos)</label><input id="em_dur" type="number" value="${durNum}" min="3" max="60"></div>`}
     <div id="em_msg" class="fmsg"></div>
     <div class="form-actions">
       <button class="fa-cancel" onclick="fecharModal()">Cancelar</button>
@@ -2126,7 +2133,12 @@ async function autorizar(channelId, valor, nome){
   }catch(e){ alert('Erro: '+((e&&e.message)||e)); }
 }
 
-async function editarTags(channelId, nome, atuais){
+/* atuais chega como JSON em string, não como array interpolado.
+   Interpolar o array direto colocava aspas duplas cruas dentro do argumento;
+   um valor com aspa encerrava a string e o handler virava sintaxe inválida. */
+async function editarTags(channelId, nome, atuaisJson){
+  let atuais = [];
+  try{ atuais = JSON.parse(atuaisJson || '[]'); }catch(e){ atuais = []; }
   let sugestoes = [];
   try{
     const { data } = await sb.rpc('listar_tags');
