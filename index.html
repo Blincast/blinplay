@@ -380,7 +380,19 @@ function statusCampanha(c){
   return { k:'live', t:'No ar' };
 }
 
-/* ---- C5: ESCAPE DE HTML ------------------------------------------------
+/* ---- C5: ESCAPE POR CONTEXTO -------------------------------------------
+   São quatro contextos e quatro tratamentos. Usar o de um no outro não
+   protege, e pode dar falsa impressão de proteção:
+
+     texto em HTML .................. esc(v)
+     valor de atributo comum ........ escA(v)
+     string JavaScript solta ........ escJ(v)
+     string JS DENTRO de atributo ... atr(v), que é escA(escJ(v))
+
+   O último é o que importa nos handlers inline: escJ sozinho deixa a aspa
+   dupla literal em \", e aspa dupla encerra o atributo, permitindo injetar
+   novos atributos e executar script.
+
    Todas as views montam HTML com template literal e interpolam texto vindo
    do banco. Nome de mídia, de hotel, de canal e observação são digitados
    pelo próprio cliente. Sem escape, um cliente que nomeie um arquivo como
@@ -400,6 +412,24 @@ function esc(v){
 function escA(v){
   return esc(v).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
+/* REGRA ÚNICA para valor que entra em atributo de evento.
+
+   escJ escapa para string JavaScript, mas o resultado ainda contém aspa
+   dupla literal em \" — e aspa dupla ENCERRA o atributo HTML. O escape de
+   JavaScript não substitui o de HTML; os dois precisam ser compostos, nesta
+   ordem: primeiro para JavaScript, depois para HTML.
+
+   Assim, "a\"b" vira a\&quot;b no fonte. O interpretador de HTML decodifica
+   &quot; para aspa e entrega a\"b ao motor JavaScript, que a lê como aspa
+   escapada DENTRO da string. E uma entidade digitada pelo cliente, como
+   &#39;, tem o & escapado para &amp; e permanece texto literal, sem virar
+   apóstrofo dentro do atributo.
+
+   Nome de mídia, canal, campanha e tag são digitados pela conta cliente, e o
+   superadministrador vê todos eles na Biblioteca de Mídia. Um valor mal
+   tratado aqui executa na sessão que a RLS não restringe. */
+function atr(v){ return escA(escJ(v)); }
+
 function escJ(v){
   return String(v === null || v === undefined ? '' : v)
     .replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'\\"')
@@ -415,7 +445,7 @@ function escJ(v){
    Existe porque, sem ela, não há como saber qual index.html está publicado —
    e subir um arquivo antigo por engano é indistinguível de um recurso que
    não funcionou. */
-const PAINEL_VERSAO = 'v3.3';
+const PAINEL_VERSAO = 'v3.5';
 console.log('[BlinPlay] painel', PAINEL_VERSAO);
 
 /* ---------------- NAVEGAÇÃO ---------------- */
@@ -457,7 +487,7 @@ function enter(role){
   } else {
     const nomeConta = CLI_ACC && CLI_ACC.nome ? CLI_ACC.nome : 'Cliente';
     const cnpjConta = CLI_ACC && CLI_ACC.cnpj ? CLI_ACC.cnpj : '';
-    pill.innerHTML = '● '+nomeConta + (cnpjConta?` <span class="pill-cnpj">${cnpjConta}</span>`:'');
+    pill.innerHTML = '● '+esc(nomeConta) + (cnpjConta?` <span class="pill-cnpj">${esc(cnpjConta)}</span>`:'');
   }
   buildNav(); render();
 }
@@ -513,7 +543,7 @@ async function doLogin(){
 
 function mostrarSeletorHotel(){
   const cards = CLI_ACCS.map(a=>
-    `<button class="hotel-pick" onclick="escolherHotel('${a.id}')">
+    `<button class="hotel-pick" onclick="escolherHotel('${atr(a.id)}')">
        <span class="hp-nome">${esc(a.nome)}</span><span class="hp-cnpj">${esc(a.cnpj)}</span>
      </button>`).join('');
   abrirModal(`
@@ -631,7 +661,7 @@ async function render(){
     if(meu !== RENDER_TOKEN || alvo !== CUR) return;   // superada
     view.innerHTML = html;
   }
-  catch(e){ view.innerHTML='<div class="note" style="background:rgba(244,96,107,.1);border-color:rgba(244,96,107,.3);color:#ffb3ba">Erro ao carregar: '+(e.message||e)+'</div>'; }
+  catch(e){ view.innerHTML='<div class="note" style="background:rgba(244,96,107,.1);border-color:rgba(244,96,107,.3);color:#ffb3ba">Erro ao carregar: '+esc(e.message||e)+'</div>'; }
 }
 
 function topbar(title,sub,actions=''){return `<div class="top"><div><h1>${title}</h1><div class="sub">${sub}</div></div><div class="top-actions">${actions}</div></div>`;}
@@ -711,7 +741,7 @@ const VIEWS = {
             <div class="est-sub">${esc(c.player_version||'—')}</div></td>
         <td style="color:var(--mut);font-size:12px;max-width:180px">${c.observacao ? esc(c.observacao) : '<span style="color:#4a4a52">—</span>'}</td>
         <td style="white-space:nowrap">
-          <button class="mini" onclick='editarInventario("${c.id}","${nomeEsc}")'>✎ Editar</button>
+          <button class="mini" onclick='editarInventario("${atr(c.id)}","${atr(c.nome)}")'>✎ Editar</button>
         </td>
       </tr>`;
     }).join('');
@@ -755,7 +785,7 @@ const VIEWS = {
         const visto=c.last_seen_at?tempoRel(c.last_seen_at):'nunca';
         const tags=(c.tags||[]);
         const tagsHtml = tags.length
-          ? tags.map(t=>'<span style="background:#1e1e24;color:var(--mut);font-size:10.5px;padding:2px 7px;border-radius:12px;margin-right:4px">'+t+'</span>').join('')
+          ? tags.map(t=>'<span style="background:#1e1e24;color:var(--mut);font-size:10.5px;padding:2px 7px;border-radius:12px;margin-right:4px">'+esc(t)+'</span>').join('')
           : '<span style="color:#4a4a52;font-size:11px">sem tags</span>';
         const pend = (c.autorizado === false);
         return `<tr class="row">
@@ -766,13 +796,13 @@ const VIEWS = {
           <td style="color:var(--mut)">${visto}</td>
           <td style="color:var(--mut)">${esc(c.player_version||'—')}</td>
           <td style="white-space:nowrap">
-            <button class="mini" onclick="verTela('${c.id}','${escJ(c.nome)}')">◱ Ver tela</button>
-            ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick="acessoRemoto('${c.id}','${escJ(c.nome)}')" title="${c.rustdesk_id?'RustDesk '+escA(c.rustdesk_id):'RustDesk não configurado'}">⧉ Remoto</button>`}
-            <button class="mini" onclick="pedirRefresh('${c.id}','${escJ(c.nome)}')">⟳ Atualizar tela</button>
-            ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick='editarTags("${escJ(c.id)}","${escJ(c.nome)}","${escJ(JSON.stringify(tags))}")'>⌗ Tags</button>`}
+            <button class="mini" onclick="verTela('${atr(c.id)}','${atr(c.nome)}')">◱ Ver tela</button>
+            ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick="acessoRemoto('${atr(c.id)}','${atr(c.nome)}')" title="${c.rustdesk_id?'RustDesk '+escA(c.rustdesk_id):'RustDesk não configurado'}">⧉ Remoto</button>`}
+            <button class="mini" onclick="pedirRefresh('${atr(c.id)}','${atr(c.nome)}')">⟳ Atualizar tela</button>
+            ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick='editarTags("${atr(c.id)}","${atr(c.nome)}","${atr(JSON.stringify(tags))}")'>⌗ Tags</button>`}
             ${COLS_EXTRAS===false ? '' : pend
-              ? `<button class="mini" style="background:#332a10;border-color:#4a3d1c;color:#F5C518" onclick='autorizar("${escJ(c.id)}",true,"${escJ(c.nome)}")'>✓ Autorizar</button>`
-              : `<button class="mini" onclick='autorizar("${escJ(c.id)}",false,"${escJ(c.nome)}")' title="revogar autorização">⊘</button>`}
+              ? `<button class="mini" style="background:#332a10;border-color:#4a3d1c;color:#F5C518" onclick='autorizar("${atr(c.id)}",true,"${atr(c.nome)}")'>✓ Autorizar</button>`
+              : `<button class="mini" onclick='autorizar("${atr(c.id)}",false,"${atr(c.nome)}")' title="revogar autorização">⊘</button>`}
           </td>
         </tr>`;
       }).join('');
@@ -834,11 +864,11 @@ const VIEWS = {
           <td style="color:var(--mut)">${esc(c.player_version||'—')}
               <div class="est-sub">${nProg? nProg+' na programação' : 'sem programação'}${c.ativo?'':' · INATIVO'}</div></td>
           <td style="white-space:nowrap">
-            <button class="mini" onclick="copiarCodigo('${cod}')">⧉ Código</button>
-            <button class="mini" onclick="copiarURL('${escJ(url)}')">⧉ URL</button>
-            <button class="mini" onclick='renomearCanal("${escJ(c.id)}","${escJ(c.nome)}")'>✎ Renomear</button>
-            <button class="mini" onclick='alternarCanal("${escJ(c.id)}","${escJ(c.nome)}",${c.ativo?'false':'true'})'>${c.ativo?'⊘ Inativar':'✓ Reativar'}</button>
-            <button class="mini danger" onclick='excluirCanal("${escJ(c.id)}","${escJ(c.nome)}",${Number(nPl[c.id])||0})'>🗑</button>
+            <button class="mini" onclick="copiarCodigo('${atr(cod)}')">⧉ Código</button>
+            <button class="mini" onclick="copiarURL('${atr(url)}')">⧉ URL</button>
+            <button class="mini" onclick='renomearCanal("${atr(c.id)}","${atr(c.nome)}")'>✎ Renomear</button>
+            <button class="mini" onclick='alternarCanal("${atr(c.id)}","${atr(c.nome)}",${c.ativo?'false':'true'})'>${c.ativo?'⊘ Inativar':'✓ Reativar'}</button>
+            <button class="mini danger" onclick='excluirCanal("${atr(c.id)}","${atr(c.nome)}",${Number(nPl[c.id])||0})'>🗑</button>
           </td></tr>`;
       }).join('');
     }
@@ -877,7 +907,7 @@ const VIEWS = {
       const selo = n
         ? `<span class="badge live">${n} ${n===1?'item':'itens'} no ar</span>`
         : `<span class="badge paused">programação vazia</span>`;
-      return `<tr class="row" style="cursor:pointer" onclick="abrirProg('${c.id}')">
+      return `<tr class="row" style="cursor:pointer" onclick="abrirProg('${atr(c.id)}')">
       <td><div class="est-name">${esc(c.accounts?c.accounts.nome:'—')}</div><div class="est-sub">Canal: ${esc(c.nome)}</div></td>
       <td>${selo}</td>
       <td style="text-align:right"><button class="mini">Montar programação →</button></td></tr>`;
@@ -904,9 +934,9 @@ const VIEWS = {
           <div class="camp-main"><div class="cn">${esc(c.nome)}</div><div class="cd">${di} → ${df} · ${esc(c.accounts?c.accounts.nome:'')}</div></div>
           <span class="freq">1 a cada ${esc(c.frequencia_a_cada)}</span>
           <span class="badge ${badge}">${badge==='live'?'● ':''}${st}</span>
-          <button class="mini" onclick="togglePausaCampanha('${escJ(c.id)}',${c.ativo ? 'true' : 'false'})">${c.ativo?'⏸ Pausar':'▶ Retomar'}</button>
-          <button class="mini" onclick="editarCampanha('${c.id}')">Editar</button>
-          <button class="mini danger" onclick="excluirCampanha('${c.id}','${escJ(c.nome)}')">Excluir</button>
+          <button class="mini" onclick="togglePausaCampanha('${atr(c.id)}',${c.ativo ? 'true' : 'false'})">${c.ativo?'⏸ Pausar':'▶ Retomar'}</button>
+          <button class="mini" onclick="editarCampanha('${atr(c.id)}')">Editar</button>
+          <button class="mini danger" onclick="excluirCampanha('${atr(c.id)}','${atr(c.nome)}')">Excluir</button>
         </div>`;
       }).join('');
     }
@@ -943,9 +973,9 @@ const VIEWS = {
           <td style="color:var(--mut)">${n} canal${n===1?'':'is'}</td>
           <td style="white-space:nowrap">
             <button class="mini" onclick="CUR='usuarios';buildNav();render()">Usuários</button>
-            <button class="mini" onclick='alternarConta("${a.id}","${nomeEsc}",${a.ativo?'false':'true'})'>${a.ativo?'⊘ Inativar':'✓ Reativar'}</button>
+            <button class="mini" onclick='alternarConta("${atr(a.id)}","${atr(a.nome)}",${a.ativo?'false':'true'})'>${a.ativo?'⊘ Inativar':'✓ Reativar'}</button>
             ${n===0
-              ? `<button class="mini danger" onclick='excluirConta("${a.id}","${nomeEsc}")'>🗑 Excluir</button>`
+              ? `<button class="mini danger" onclick='excluirConta("${atr(a.id)}","${atr(a.nome)}")'>🗑 Excluir</button>`
               : `<button class="mini" disabled style="opacity:.35;cursor:not-allowed" title="Conta com canal não pode ser excluída. Remova os canais primeiro ou apenas inative.">🗑 Excluir</button>`}
           </td>
         </tr>`;
@@ -991,10 +1021,10 @@ const VIEWS = {
           <td><span class="badge ${ativo?'live':'paused'}">${ativo?'Ativo':'Inativo'}</span></td>
           <td>${listaH}</td>
           <td style="white-space:nowrap">
-            <button class="mini" onclick='editarUsuario("${p.id}")'>✎ Editar</button>
-            <button class="mini" onclick='trocarSenha("${p.id}","${nEsc}")'>🔑 Senha</button>
-            <button class="mini" onclick='alternarUsuario("${p.id}","${nEsc}",${ativo?'false':'true'})'>${ativo?'⊘ Inativar':'✓ Reativar'}</button>
-            <button class="mini danger" onclick='excluirUsuario("${p.id}","${nEsc}")'>🗑</button>
+            <button class="mini" onclick='editarUsuario("${atr(p.id)}")'>✎ Editar</button>
+            <button class="mini" onclick='trocarSenha("${atr(p.id)}","${atr(p.nome)}")'>🔑 Senha</button>
+            <button class="mini" onclick='alternarUsuario("${atr(p.id)}","${atr(p.nome)}",${ativo?'false':'true'})'>${ativo?'⊘ Inativar':'✓ Reativar'}</button>
+            <button class="mini danger" onclick='excluirUsuario("${atr(p.id)}","${atr(p.nome)}")'>🗑</button>
           </td>
         </tr>`;
       }).join('');
@@ -1053,7 +1083,7 @@ const VIEWS = {
           <td><div class="est-name">${esc(c.nome)}</div></td>
           <td><span class="stat ${online?'on':'off'}"><span class="dot ${online?'on':'off'}"></span>${online?'Online':'Offline'}</span></td>
           <td style="color:var(--mut)">${visto}</td>
-          <td style="white-space:nowrap"><button class="mini" onclick="pedirRefresh('${c.id}','${escJ(c.nome)}')">⟳ Atualizar tela</button></td>
+          <td style="white-space:nowrap"><button class="mini" onclick="pedirRefresh('${atr(c.id)}','${atr(c.nome)}')">⟳ Atualizar tela</button></td>
         </tr>`;
       }).join('');
     }
@@ -1115,7 +1145,7 @@ function agendaPanel(camps){
     days.forEach(day=>{
       const out=day.getMonth()!==AG_REF.getMonth()?' out':'';
       const td=agSame(day,hoje)?' today':'';
-      daysHtml+=`<div class="ag-day${out}${td}" onclick="agDia('${agIso(day)}')"><div class="ag-n">${day.getDate()}</div></div>`;
+      daysHtml+=`<div class="ag-day${out}${td}" onclick="agDia('${atr(agIso(day))}')"><div class="ag-n">${day.getDate()}</div></div>`;
     });
     // barras
     const segs=(camps||[]).filter(c=>agSod(agParse(c.data_inicio))<=we&&agSod(agParse(c.data_fim))>=ws)
@@ -1134,7 +1164,7 @@ function agendaPanel(camps){
       const cls='ag-ev '+st+(sh?' s':'')+(eh?' e':'');
       const left=(c0/7*100), width=((c1-c0+1)/7*100);
       const nm=(c.nome||'').replace(/</g,'&lt;').replace(/"/g,'&quot;');
-      barsHtml+=`<div class="${cls}" title="${nm}" onclick="event.stopPropagation();agDia('${agIso(s<ws?ws:s)}')" `
+      barsHtml+=`<div class="${cls}" title="${nm}" onclick="event.stopPropagation();agDia('${atr(agIso(s<ws?ws:s))}')" `
         +`style="left:calc(${left}% + 4px);width:calc(${width}% - 8px);top:${lane*LANE_H}px"><span class="dot"></span><span>${nm}</span></div>`;
     });
     days.forEach((day,i)=>{const ex=(laneCount[i]||0)-MAX;if(ex>0){
@@ -1186,7 +1216,7 @@ function agDia(iso){
         <div class="meta">
           <div>Período<b>${di} → ${df}</b></div>
           <div>Frequência<b>1 a cada ${esc(c.frequencia_a_cada)}</b></div>
-          ${hotel?`<div>Hotel<b>${hotel}</b></div>`:''}
+          ${hotel?`<div>Hotel<b>${esc(hotel)}</b></div>`:''}
         </div></div>`;
     }).join('')+'</div>';
   }
@@ -1388,7 +1418,7 @@ async function salvarEdicaoUsuario(id){
 
 function trocarSenha(id, nome){
   abrirModal(
-    '<h3>Trocar senha</h3><div class="fsub">'+nome+'</div>'+
+    '<h3>Trocar senha</h3><div class="fsub">'+esc(nome)+'</div>'+
     '<div class="fld"><label>Nova senha</label><input id="gu_senha" type="password" autocomplete="new-password" placeholder="mínimo 6 caracteres"></div>'+
     '<div style="color:var(--mut);font-size:11.5px">A pessoa passa a usar esta senha imediatamente. '+
       'Sessões abertas continuam válidas até expirarem.</div>'+
@@ -1584,8 +1614,8 @@ function mediaPanelReal(list, isAdmin){
         <div class="mt">${esc(m.nome)}</div>
         <div class="ms">${isVid? fmtDur(m.duracao_seg) : (m.duracao_seg!=null ? m.duracao_seg+'s na tela' : 'imagem')}${tam?' · '+tam:''}${isAdmin&&m.accounts?' · '+esc(m.accounts.nome):''}</div>
         <div class="mactions">
-          <button class="mini" onclick="editarMidia('${escJ(m.id)}','${escJ(m.nome)}',${m.duracao_seg == null ? 'null' : Number(m.duracao_seg)},'${escJ(m.tipo)}')">✎ Editar</button>
-          <button class="mini danger" onclick="excluirMidia('${m.id}','${escJ(m.storage_path)}','${escJ(m.nome)}')">🗑 Excluir</button>
+          <button class="mini" onclick="editarMidia('${atr(m.id)}','${atr(m.nome)}',${m.duracao_seg == null ? 'null' : Number(m.duracao_seg)},'${atr(m.tipo)}')">✎ Editar</button>
+          <button class="mini danger" onclick="excluirMidia('${atr(m.id)}','${atr(m.storage_path)}','${atr(m.nome)}')">🗑 Excluir</button>
         </div>
       </div>
     </div>`;
@@ -1622,7 +1652,7 @@ function editarMidia(id, nome, dur, tipo){
     <div id="em_msg" class="fmsg"></div>
     <div class="form-actions">
       <button class="fa-cancel" onclick="fecharModal()">Cancelar</button>
-      <button class="fa-save" onclick="salvarEdicaoMidia('${id}','${tipo}')">Salvar</button>
+      <button class="fa-save" onclick="salvarEdicaoMidia('${atr(id)}','${atr(tipo)}')">Salvar</button>
     </div>`);
 }
 async function salvarEdicaoMidia(id, tipo){
@@ -1664,7 +1694,7 @@ async function progEditor(chId){
     return `<div class="pl-item">
       <div class="pl-th">${th}</div>
       <div class="pl-meta"><div class="pl-nm">${esc(m.nome)}</div><div class="pl-sub">${isVid?'vídeo · '+fmtDur(m.duracao_seg):m.duracao_seg+'s'}</div></div>
-      <button class="mini" onclick="addToProg('${chId}','${ch.account_id}','${m.id}')">＋ Incluir</button>
+      <button class="mini" onclick="addToProg('${atr(chId)}','${atr(ch.account_id)}','${atr(m.id)}')">＋ Incluir</button>
     </div>`;
   }).join('')
     : ((meds && meds.length)
@@ -1689,15 +1719,15 @@ async function progEditor(chId){
       <div class="pl-th">${th}</div>
       <div class="pl-meta"><div class="pl-nm">${esc(m.nome)}</div><div class="pl-sub">${isVid?'vídeo · '+fmtDur(m.duracao_seg):m.duracao_seg+'s'}</div></div>
       <div class="pl-btns">
-        <button class="mini" onclick="moveProg('${it.id}',-1)" ${i===0?'disabled':''}>↑</button>
-        <button class="mini" onclick="moveProg('${it.id}',1)" ${i===items.length-1?'disabled':''}>↓</button>
-        <button class="mini danger" onclick="removeFromProg('${it.id}')">✕</button>
+        <button class="mini" onclick="moveProg('${atr(it.id)}',-1)" ${i===0?'disabled':''}>↑</button>
+        <button class="mini" onclick="moveProg('${atr(it.id)}',1)" ${i===items.length-1?'disabled':''}>↓</button>
+        <button class="mini danger" onclick="removeFromProg('${atr(it.id)}')">✕</button>
       </div>
     </div>`;
   }).join('');
   const seqHtml = (items&&items.length)?seq:'<div class="empty" style="padding:30px"><b>Programação vazia</b>Inclua mídias da biblioteca ao lado. Elas tocarão nesta ordem, em loop.</div>';
 
-  const addAll = disponiveis.length ? `<button class="ghost" onclick="addAllProg('${chId}','${ch.account_id}')">＋ Incluir todas</button>` : '';
+  const addAll = disponiveis.length ? `<button class="ghost" onclick="addAllProg('${atr(chId)}','${atr(ch.account_id)}')">＋ Incluir todas</button>` : '';
 
   const resumo = 'O que toca neste canal, em ordem, em loop · '
     + (meds ? meds.length : 0) + ' mídia(s) na conta · '
@@ -1946,7 +1976,7 @@ async function editarCampanha(id){
     <div id="cp_msg" class="fmsg"></div>
     <div class="form-actions">
       <button class="fa-cancel" onclick="fecharModal()">Cancelar</button>
-      <button class="fa-save" onclick="salvarCampanha('${id}')">Salvar alterações</button>
+      <button class="fa-save" onclick="salvarCampanha('${atr(id)}')">Salvar alterações</button>
     </div>`);
   carregarMidiasCanais((its||[]).map(x=>x.media_id), (chs||[]).map(x=>x.channel_id));
 }
@@ -1990,7 +2020,7 @@ async function verTela(channelId, nomeCanal){
   const nomeEsc = escJ(nomeCanal);
   abrirModal(
     '<h3>Tela do box</h3>'+
-    '<div class="fsub">'+ (nomeCanal||'') +'</div>'+
+    '<div class="fsub">'+esc(nomeCanal||'')+'</div>'+
     '<div id="snapWrap" style="margin:12px 0;min-height:170px;display:flex;align-items:center;'+
       'justify-content:center;background:#000;border-radius:10px;overflow:hidden">'+
       '<div style="color:#8a8a92;font-size:12.5px;padding:26px;text-align:center">'+
@@ -2087,7 +2117,7 @@ async function editarInventario(channelId, nomeCanal){
     if(data) atual = data;
   }catch(e){}
   abrirModal(
-    '<h3>Dispositivo</h3><div class="fsub">'+(nomeCanal||'')+'</div>'+
+    '<h3>Dispositivo</h3><div class="fsub">'+esc(nomeCanal||'')+'</div>'+
     '<div class="fld"><label>MAC do box</label>'+
       '<input id="iv_mac" placeholder="9C:00:D3:CC:83:5E" maxlength="17" '+
       'value="'+String(atual.mac||'').replace(/"/g,'&quot;')+'"></div>'+
@@ -2206,7 +2236,7 @@ async function editarTags(channelId, nome, atuaisJson){
   }catch(e){}
   const val = (atuais||[]).join(', ');
   abrirModal(
-    '<h3>Tags</h3><div class="fsub">'+nome+'</div>'+
+    '<h3>Tags</h3><div class="fsub">'+esc(nome)+'</div>'+
     '<div class="fld"><label>Separadas por vírgula</label>'+
       '<input id="tg_in" placeholder="hilton, rj, migrado" value="'+val.replace(/"/g,'&quot;')+'"></div>'+
     (sugestoes.length
@@ -2248,7 +2278,7 @@ async function acessoRemoto(channelId, nomeCanal){
   const idv = (cred.rustdesk_id||''), sev = (cred.rustdesk_senha||'');
   abrirModal(
     '<h3>Acesso remoto</h3>'+
-    '<div class="fsub">'+(nomeCanal||'')+' · RustDesk</div>'+
+    '<div class="fsub">'+esc(nomeCanal||'')+' · RustDesk</div>'+
     '<div class="fld"><label>ID do RustDesk</label>'+
       '<input id="rd_id" placeholder="ex: 1234567890" value="'+idv.replace(/"/g,'&quot;')+'"></div>'+
     '<div class="fld"><label>Senha de acesso permanente</label>'+
