@@ -86,12 +86,6 @@
     border:0;border-radius:var(--rs);padding:13px;font-weight:700;font-size:15px;letter-spacing:.02em;margin-top:8px;
     box-shadow:0 10px 24px -10px rgba(245,168,0,.6);transition:.15s}
   .btn-gold:hover{transform:translateY(-1px);filter:brightness(1.05)}
-  .dlink{background:none;border:0;color:var(--mut2);font-size:11.5px;letter-spacing:.04em}
-  .dlink:hover{color:var(--gold)}
-  .demo-row button{flex:1;background:var(--surf2);border:1px solid var(--line);color:var(--txt);
-    border-radius:var(--rs);padding:11px 8px;font-size:12.5px;font-weight:600;transition:.15s;line-height:1.3}
-  .demo-row button:hover{border-color:var(--gold);background:var(--gold-soft)}
-  .demo-row button span{display:block;font-size:10.5px;color:var(--mut);font-weight:500;margin-top:2px}
 
   /* ---------- APP SHELL ---------- */
   #app{display:none;min-height:100vh;grid-template-columns:248px 1fr}
@@ -445,7 +439,7 @@ function escJ(v){
    Existe porque, sem ela, não há como saber qual index.html está publicado —
    e subir um arquivo antigo por engano é indistinguível de um recurso que
    não funcionou. */
-const PAINEL_VERSAO = 'v3.5';
+const PAINEL_VERSAO = 'v3.6';
 console.log('[BlinPlay] painel', PAINEL_VERSAO);
 
 /* ---------------- NAVEGAÇÃO ---------------- */
@@ -561,13 +555,35 @@ function showMsg(t,k){ const m=document.getElementById('loginMsg'); m.textConten
 
 // ===== Fluxo de convite: mostrar tela de criar senha =====
 function mostrarCriarSenha(){
-  // esconde os campos de login normais e mostra a criação de senha
-  document.querySelector('#email').closest('.fld').style.display='none';
-  document.querySelector('#pass').closest('.fld').style.display='none';
-  document.getElementById('btnEntrar').style.display='none';
-  document.querySelector('.demo-link').style.display='none';
-  document.querySelector('.tag').textContent='BEM-VINDO · DEFINA SUA SENHA';
-  document.getElementById('setpassBox').classList.remove('hidden');
+  /* Este é o caminho por onde TODO cliente novo entra: convite e recuperação
+     de senha. Ele quebrou quando o modo demonstração foi removido no C1 — o
+     elemento .demo-link deixou de existir, querySelector devolveu null, o
+     acesso a .style lançou TypeError e a função abortava antes de revelar a
+     caixa de definição de senha. Quem recebia convite não conseguia definir
+     senha e, portanto, não conseguia entrar.
+
+     Como esconder um elemento é acessório e revelar a caixa é essencial, a
+     ordem foi invertida: revela primeiro, esconde depois, e cada passo
+     acessório tolera ausência do elemento. Assim, remover um elemento da tela
+     de login volta a ser uma mudança inofensiva. */
+
+  // essencial primeiro
+  const box = document.getElementById('setpassBox');
+  if(box) box.classList.remove('hidden');
+
+  // acessórios, tolerantes a ausência
+  const esconder = sel => {
+    const el = document.querySelector(sel);
+    if(!el) return;
+    const alvo = el.closest('.fld') || el;
+    alvo.style.display = 'none';
+  };
+  esconder('#email');
+  esconder('#pass');
+  esconder('#btnEntrar');
+
+  const tag = document.querySelector('.tag');
+  if(tag) tag.textContent = 'BEM-VINDO · DEFINA SUA SENHA';
 }
 async function definirSenha(){
   const p1=document.getElementById('np1').value||'';
