@@ -415,7 +415,7 @@ function escJ(v){
    Existe porque, sem ela, não há como saber qual index.html está publicado —
    e subir um arquivo antigo por engano é indistinguível de um recurso que
    não funcionou. */
-const PAINEL_VERSAO = 'v3.2';
+const PAINEL_VERSAO = 'v3.3';
 console.log('[BlinPlay] painel', PAINEL_VERSAO);
 
 /* ---------------- NAVEGAÇÃO ---------------- */
@@ -2303,9 +2303,9 @@ async function novaMidia(){
   }
   abrirModal(`
     <h3>Subir mídia</h3>
-    <div class="fsub">Imagem (JPG, PNG, WebP) ou vídeo (MP4), até 50 MB.</div>
+    <div class="fsub">Imagem (JPG, PNG, WebP, GIF) ou vídeo (MP4, WebM), até 50 MB.</div>
     ${accSelect}
-    <div class="fld"><label>Arquivo</label><input id="nm_file" type="file" accept="image/jpeg,image/png,image/webp,video/mp4" onchange="previewMidia(this)"></div>
+    <div class="fld"><label>Arquivo</label><input id="nm_file" type="file" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm" onchange="previewMidia(this)"></div>
     <div class="fld"><label>Nome / título</label><input id="nm_nome" placeholder="Ex: Café da manhã"></div>
     <div class="fld" id="nm_dur_wrap"><label>Tempo na tela (segundos) — só imagem</label><input id="nm_dur" type="number" value="8" min="3" max="60"></div>
     <div id="nm_msg" class="fmsg"></div>
@@ -2352,9 +2352,30 @@ async function salvarMidia(){
   const fileEl=document.getElementById('nm_file');
   const f=fileEl && fileEl.files && fileEl.files[0];
   const msg=document.getElementById('nm_msg'), btn=document.getElementById('nm_btn');
-  if(!f){ msg.className='fmsg err'; msg.textContent='Escolha um arquivo.'; return; }
-  if(!nome){ msg.className='fmsg err'; msg.textContent='Dê um nome à mídia.'; return; }
-  if(f.size > 50*1048576){ msg.className='fmsg err'; msg.textContent='Arquivo acima de 50 MB.'; return; }
+  /* TODA validação acontece ANTES de desabilitar o botão.
+     Havia duas verificações depois do btn.disabled=true que retornavam sem
+     reabilitá-lo: escolher um arquivo de tipo não suportado mostrava o erro e
+     deixava o Enviar travado, obrigando a fechar e reabrir o modal.
+     Havia também dois limites em conflito, 50 MB antes e 500 MB depois, sendo
+     que o segundo era inalcançável. Passa a existir um só, coerente com o
+     texto do modal. */
+  const MAX_MB    = 50;
+  const MAX_BYTES = MAX_MB * 1048576;
+  const TIPOS_OK  = ['video/mp4','video/webm','image/jpeg','image/png','image/webp','image/gif'];
+
+  const erro = (txt) => { msg.className='fmsg err'; msg.textContent = txt; btn.disabled = false; };
+
+  if(!f)    { erro('Escolha um arquivo.'); return; }
+  if(!nome) { erro('Dê um nome à mídia.'); return; }
+  if(f.size > MAX_BYTES){
+    erro('Arquivo de '+(f.size/1048576).toFixed(0)+' MB. O limite é '+MAX_MB+' MB.');
+    return;
+  }
+  if(f.type && !TIPOS_OK.includes(f.type)){
+    erro('Tipo não suportado ('+f.type+'). Use MP4, WebM, JPEG, PNG, WebP ou GIF.');
+    return;
+  }
+
   const isVid=f.type.startsWith('video');
   const tipo=isVid?'video':'image';
 
@@ -2368,21 +2389,6 @@ async function salvarMidia(){
     dur = (real && real >= 1) ? real : 30;  // 30 só como fallback se não conseguir ler
   } else {
     dur = parseInt(val('nm_dur')||'8',10);
-  }
-
-  /* Sem limite de tamanho nem verificação de tipo, um upload podia encher a
-     cota do projeto ou colocar no canal um arquivo que o player não toca. */
-  const TIPOS_OK = ['video/mp4','video/webm','image/jpeg','image/png','image/webp','image/gif'];
-  const MAX_BYTES = 500 * 1024 * 1024;
-  if(f.size > MAX_BYTES){
-    msg.className='fmsg err';
-    msg.textContent='Arquivo muito grande ('+(f.size/1048576).toFixed(0)+' MB). O limite é 500 MB.';
-    return;
-  }
-  if(f.type && !TIPOS_OK.includes(f.type)){
-    msg.className='fmsg err';
-    msg.textContent='Tipo não suportado ('+esc(f.type)+'). Use MP4, WebM, JPEG, PNG, WebP ou GIF.';
-    return;
   }
 
   msg.textContent='Enviando arquivo…';
