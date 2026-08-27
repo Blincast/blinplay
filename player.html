@@ -70,7 +70,7 @@
 
 <script>
 /* ================= CONFIG ================= */
-const PLAYER_VERSION = 'v5.0d';   // versão do player — aparece na coluna VERSÃO do painel
+const PLAYER_VERSION = 'v5.1d';   // versão do player — aparece na coluna VERSÃO do painel
 const MEDIA_BASE = SB_URL + '/storage/v1/object/public/blinplay-media/';
 const RESYNC_FALLBACK_MS = 15 * 1000;  // FALLBACK rápido: checa a cada 15s quando Realtime NÃO está confirmado
 let resyncTimer = null;
@@ -142,13 +142,22 @@ async function verificarAutorizacao(){
     const msg = String((e && e.message) || e);
 
     /* PORTÃO NÃO INSTALADO NO BANCO.
-       Se a RPC não existe, o recurso simplesmente não foi habilitado neste
-       projeto — e nesse caso ele não deve bloquear nada. Endurecer o A4 sem
-       essa verificação derrubou um box de produção: a RPC devolvia 404, o
-       player tratava como "não autorizado" e ficava na tela de espera,
-       reiniciando a cada dois minutos.
-       Portão que não existe não reprova ninguém. */
-    if(/Could not find the function|PGRST202|does not exist|404/i.test(msg)){
+       Se a RPC não existe, o recurso não foi habilitado neste projeto e não
+       deve bloquear nada. Endurecer o A4 sem essa verificação derrubou um box
+       de produção: a RPC devolvia 404, o player tratava como "não autorizado"
+       e ficava na tela de espera, reiniciando a cada dois minutos.
+
+       A detecção passou a exigir o CÓDIGO estruturado do PostgREST.
+       Antes, a comparação era por texto livre e incluía a substring "404".
+       Qualquer intermediário que devolvesse uma página de erro contendo esse
+       número — portal cativo de hotel, proxy reverso, erro de CDN — era lido
+       como "portão ausente" e liberava um box que nunca foi autorizado.
+       Ou seja, o mesmo desvio de conteúdo entre hotéis que o A4 existe para
+       impedir, agora acionado por falha de rede em vez de por aprovação.
+       Erro de transporte não é ausência de recurso: cai no ramo seguinte, que
+       só libera quem já foi autorizado antes. */
+    const codigo = (e && (e.code || (e.error && e.error.code))) || '';
+    if(codigo === 'PGRST202'){
       portaoInstalado = false;
       autorizado = true;
       logar('AUTORIZACAO: portao nao instalado no banco — seguindo sem bloqueio');
