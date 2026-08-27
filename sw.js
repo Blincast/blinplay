@@ -34,7 +34,7 @@
    - Cota: falha de escrita é capturada, a entrada parcial é apagada e
      o download é reagendado. Nunca fica entrada meio-gravada.
    ============================================================ */
-const VERSION     = 'blinplay-v9';
+const VERSION     = 'blinplay-v10';
 const APP_CACHE   = 'app-' + VERSION;
 const MEDIA_CACHE = 'media-v1';      // preservado entre versões
 
@@ -77,7 +77,9 @@ self.addEventListener('message', (e) => {
   const d = e.data;
   if (d === 'skipWaiting') { self.skipWaiting(); return; }
   if (d && d.tipo === 'nativo') { NATIVO = true; return; }
-  if (d === 'clearMedia')  { caches.delete(MEDIA_CACHE); tamanhos.clear(); return; }
+  /* 'clearMedia' foi removido: nenhum ponto do player ou do painel enviava
+     essa mensagem. Manipulador sem remetente é código que ninguém exercita
+     e que dá a impressão de existir uma funcionalidade que não existe. */
   if (d && d.tipo === 'revalidar' && Array.isArray(d.urls)) {
     e.waitUntil(revalidarLista(d.urls));
   }
