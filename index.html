@@ -86,6 +86,12 @@
     border:0;border-radius:var(--rs);padding:13px;font-weight:700;font-size:15px;letter-spacing:.02em;margin-top:8px;
     box-shadow:0 10px 24px -10px rgba(245,168,0,.6);transition:.15s}
   .btn-gold:hover{transform:translateY(-1px);filter:brightness(1.05)}
+  .dlink{background:none;border:0;color:var(--mut2);font-size:11.5px;letter-spacing:.04em}
+  .dlink:hover{color:var(--gold)}
+  .demo-row button{flex:1;background:var(--surf2);border:1px solid var(--line);color:var(--txt);
+    border-radius:var(--rs);padding:11px 8px;font-size:12.5px;font-weight:600;transition:.15s;line-height:1.3}
+  .demo-row button:hover{border-color:var(--gold);background:var(--gold-soft)}
+  .demo-row button span{display:block;font-size:10.5px;color:var(--mut);font-weight:500;margin-top:2px}
 
   /* ---------- APP SHELL ---------- */
   #app{display:none;min-height:100vh;grid-template-columns:248px 1fr}
@@ -159,6 +165,25 @@
   .minfo{padding:10px 11px}
   .minfo .mt{font-size:12.5px;font-weight:600}
   .minfo .ms{font-size:11px;color:var(--mut);margin-top:2px}
+
+  /* tela Clientes: lista com busca à esquerda + biblioteca filtrada à direita */
+  .cli-panel{display:grid;grid-template-columns:230px 1fr;gap:0}
+  .cli-side{border-right:1px solid var(--line)}
+  .cli-search{padding:14px}
+  .cli-search-wrap{position:relative}
+  .cli-search-wrap input{width:100%;background:#0c0c10;border:1px solid var(--line);border-radius:var(--rs);
+    padding:9px 11px 9px 30px;color:var(--txt);font-size:13px;outline:none;transition:.18s}
+  .cli-search-wrap input:focus{border-color:var(--gold);box-shadow:0 0 0 3px var(--gold-soft)}
+  .cli-search-ic{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--mut2);font-size:13px}
+  .cli-list{padding:0 8px 14px;display:flex;flex-direction:column;gap:2px;max-height:560px;overflow-y:auto}
+  .cli-row{display:flex;align-items:center;justify-content:space-between;padding:9px 10px;border-radius:var(--rs);
+    color:var(--mut);font-size:13px;cursor:pointer;border:1px solid transparent}
+  .cli-row:hover{background:var(--surf);color:var(--txt)}
+  .cli-row.active{background:var(--gold-soft);color:var(--gold);border-color:rgba(245,168,0,.3)}
+  .cli-row span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cli-row .n{background:#1e1e24;color:var(--mut);font-size:10.5px;padding:1px 7px;border-radius:12px;flex-shrink:0;margin-left:8px}
+  .cli-row.active .n{background:rgba(245,168,0,.18);color:var(--gold)}
+  .cli-empty{padding:14px 10px;color:var(--mut2);font-size:12px;text-align:center}
 
   /* campaign */
   .camp{display:flex;align-items:center;gap:16px;padding:15px 18px;border-bottom:1px solid var(--line)}
@@ -360,33 +385,15 @@ function cnpjNormalizado(v){
 function dataBR(s){
   return s ? String(s).split('-').reverse().join('/') : '';
 }
-/* Fonte ÚNICA do status de campanha.
-   Existiam três implementações: esta, uma dentro de camp() e outra em
-   agStatus(). Esta devolvia 'off' para campanha pausada, enquanto as outras
-   duas usavam 'paused' — e 'off' não existe no CSS. Como este helper nunca
-   era chamado, o defeito nunca apareceu. É a divergência silenciosa que
-   justifica ter uma implementação só. */
 function statusCampanha(c){
-  if(!c || c.ativo === false) return { k:'paused', t:'Pausada' };
+  if(c.ativo === false) return { k:'off',   t:'Pausada'  };
   const hoje = new Date().toISOString().slice(0,10);
-  if(c.data_inicio && hoje < c.data_inicio) return { k:'sched', t:'Agendada'  };
+  if(c.data_inicio && hoje < c.data_inicio) return { k:'sched', t:'Agendada' };
   if(c.data_fim    && hoje > c.data_fim)    return { k:'done',  t:'Encerrada' };
   return { k:'live', t:'No ar' };
 }
 
-/* ---- C5: ESCAPE POR CONTEXTO -------------------------------------------
-   São quatro contextos e quatro tratamentos. Usar o de um no outro não
-   protege, e pode dar falsa impressão de proteção:
-
-     texto em HTML .................. esc(v)
-     valor de atributo comum ........ escA(v)
-     string JavaScript solta ........ escJ(v)
-     string JS DENTRO de atributo ... atr(v), que é escA(escJ(v))
-
-   O último é o que importa nos handlers inline: escJ sozinho deixa a aspa
-   dupla literal em \", e aspa dupla encerra o atributo, permitindo injetar
-   novos atributos e executar script.
-
+/* ---- C5: ESCAPE DE HTML ------------------------------------------------
    Todas as views montam HTML com template literal e interpolam texto vindo
    do banco. Nome de mídia, de hotel, de canal e observação são digitados
    pelo próprio cliente. Sem escape, um cliente que nomeie um arquivo como
@@ -406,24 +413,6 @@ function esc(v){
 function escA(v){
   return esc(v).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
-/* REGRA ÚNICA para valor que entra em atributo de evento.
-
-   escJ escapa para string JavaScript, mas o resultado ainda contém aspa
-   dupla literal em \" — e aspa dupla ENCERRA o atributo HTML. O escape de
-   JavaScript não substitui o de HTML; os dois precisam ser compostos, nesta
-   ordem: primeiro para JavaScript, depois para HTML.
-
-   Assim, "a\"b" vira a\&quot;b no fonte. O interpretador de HTML decodifica
-   &quot; para aspa e entrega a\"b ao motor JavaScript, que a lê como aspa
-   escapada DENTRO da string. E uma entidade digitada pelo cliente, como
-   &#39;, tem o & escapado para &amp; e permanece texto literal, sem virar
-   apóstrofo dentro do atributo.
-
-   Nome de mídia, canal, campanha e tag são digitados pela conta cliente, e o
-   superadministrador vê todos eles na Biblioteca de Mídia. Um valor mal
-   tratado aqui executa na sessão que a RLS não restringe. */
-function atr(v){ return escA(escJ(v)); }
-
 function escJ(v){
   return String(v === null || v === undefined ? '' : v)
     .replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'\\"')
@@ -439,7 +428,7 @@ function escJ(v){
    Existe porque, sem ela, não há como saber qual index.html está publicado —
    e subir um arquivo antigo por engano é indistinguível de um recurso que
    não funcionou. */
-const PAINEL_VERSAO = 'v3.6';
+const PAINEL_VERSAO = 'v2.6';
 console.log('[BlinPlay] painel', PAINEL_VERSAO);
 
 /* ---------------- NAVEGAÇÃO ---------------- */
@@ -451,6 +440,7 @@ const NAV = {
     {k:'dispositivos', ic:'⌸', label:'Dispositivos'},
     {sec:'CONTEÚDO'},
     {k:'midia',    ic:'▣', label:'Biblioteca de Mídia'},
+    {k:'clientes', ic:'◈', label:'Clientes'},
     {k:'prog',     ic:'☰', label:'Programação dos Canais'},
     {k:'camp',     ic:'◷', label:'Campanhas & Agenda'},
     {sec:'GESTÃO'},
@@ -469,6 +459,16 @@ const NAV = {
 let ROLE='admin', CUR='overview';
 let PROG_CH = null;   // canal aberto no editor de programação
 
+/* Tela "Clientes": lista + busca à esquerda, biblioteca filtrada à direita.
+   MIDIA_CLI_ACCS/MIDIA_CLI_CONT guardam o que foi buscado na renderização
+   atual da tela — recarregados a cada entrada nela (nunca ficam velhos),
+   mas digitar na busca só filtra esse array em memória, sem round-trip. */
+let MIDIA_CLI_SEL   = null;   // account_id escolhido (null = "Todos os clientes")
+let MIDIA_CLI_BUSCA = '';     // texto digitado na busca
+let MIDIA_CLI_ACCS  = null;   // contas ativas carregadas na última entrada na tela
+let MIDIA_CLI_CONT  = {};     // {account_id: quantidade de mídia} da última entrada na tela
+let MIDIA_CLI_TOTAL = 0;      // total geral (todas as contas)
+
 function enter(role){
   COLS_EXTRAS = null;   // B8 — reavalia as colunas opcionais a cada entrada
   ROLE=role; CUR = role==='admin'?'overview':'cli_prog';
@@ -481,7 +481,7 @@ function enter(role){
   } else {
     const nomeConta = CLI_ACC && CLI_ACC.nome ? CLI_ACC.nome : 'Cliente';
     const cnpjConta = CLI_ACC && CLI_ACC.cnpj ? CLI_ACC.cnpj : '';
-    pill.innerHTML = '● '+esc(nomeConta) + (cnpjConta?` <span class="pill-cnpj">${esc(cnpjConta)}</span>`:'');
+    pill.innerHTML = '● '+nomeConta + (cnpjConta?` <span class="pill-cnpj">${cnpjConta}</span>`:'');
   }
   buildNav(); render();
 }
@@ -537,7 +537,7 @@ async function doLogin(){
 
 function mostrarSeletorHotel(){
   const cards = CLI_ACCS.map(a=>
-    `<button class="hotel-pick" onclick="escolherHotel('${atr(a.id)}')">
+    `<button class="hotel-pick" onclick="escolherHotel('${a.id}')">
        <span class="hp-nome">${esc(a.nome)}</span><span class="hp-cnpj">${esc(a.cnpj)}</span>
      </button>`).join('');
   abrirModal(`
@@ -555,35 +555,13 @@ function showMsg(t,k){ const m=document.getElementById('loginMsg'); m.textConten
 
 // ===== Fluxo de convite: mostrar tela de criar senha =====
 function mostrarCriarSenha(){
-  /* Este é o caminho por onde TODO cliente novo entra: convite e recuperação
-     de senha. Ele quebrou quando o modo demonstração foi removido no C1 — o
-     elemento .demo-link deixou de existir, querySelector devolveu null, o
-     acesso a .style lançou TypeError e a função abortava antes de revelar a
-     caixa de definição de senha. Quem recebia convite não conseguia definir
-     senha e, portanto, não conseguia entrar.
-
-     Como esconder um elemento é acessório e revelar a caixa é essencial, a
-     ordem foi invertida: revela primeiro, esconde depois, e cada passo
-     acessório tolera ausência do elemento. Assim, remover um elemento da tela
-     de login volta a ser uma mudança inofensiva. */
-
-  // essencial primeiro
-  const box = document.getElementById('setpassBox');
-  if(box) box.classList.remove('hidden');
-
-  // acessórios, tolerantes a ausência
-  const esconder = sel => {
-    const el = document.querySelector(sel);
-    if(!el) return;
-    const alvo = el.closest('.fld') || el;
-    alvo.style.display = 'none';
-  };
-  esconder('#email');
-  esconder('#pass');
-  esconder('#btnEntrar');
-
-  const tag = document.querySelector('.tag');
-  if(tag) tag.textContent = 'BEM-VINDO · DEFINA SUA SENHA';
+  // esconde os campos de login normais e mostra a criação de senha
+  document.querySelector('#email').closest('.fld').style.display='none';
+  document.querySelector('#pass').closest('.fld').style.display='none';
+  document.getElementById('btnEntrar').style.display='none';
+  document.querySelector('.demo-link').style.display='none';
+  document.querySelector('.tag').textContent='BEM-VINDO · DEFINA SUA SENHA';
+  document.getElementById('setpassBox').classList.remove('hidden');
 }
 async function definirSenha(){
   const p1=document.getElementById('np1').value||'';
@@ -631,11 +609,13 @@ async function entrarAposConvite(userId){
 /* C1 — O "Modo demonstração" chamava enter('admin') e abria o painel sem
    autenticação nenhuma. A RLS impedia que qualquer dado aparecesse, então não
    houve vazamento — mas botão que entra no painel administrativo sem senha é
-   indefensável. Removido, junto do stub toggleDemo() que havia sido mantido
-   para uma chamada residual que não existe mais. */
+   indefensável, e o dia em que uma policy for afrouxada vira brecha real.
+   Removido. toggleDemo fica como no-op para não quebrar chamada residual. */
+function toggleDemo(){ /* removido */ }
 async function logout(){
   try{ if(sb) await sb.auth.signOut(); }catch(e){}
   CLI_ACC=null; CLI_ACCS=[]; PROG_CH=null;
+  MIDIA_CLI_SEL=null; MIDIA_CLI_BUSCA=''; MIDIA_CLI_ACCS=null; MIDIA_CLI_CONT={}; MIDIA_CLI_TOTAL=0;
   document.getElementById('app').classList.remove('show');
   document.getElementById('login').classList.remove('hidden');
   document.getElementById('pass').value='';
@@ -676,8 +656,11 @@ async function render(){
     const html = await fn();
     if(meu !== RENDER_TOKEN || alvo !== CUR) return;   // superada
     view.innerHTML = html;
+    // a busca de cliente atualiza #cliList via JS puro (sem re-render),
+    // pra digitar não fazer o campo de texto perder o foco a cada letra
+    if(alvo==='clientes') renderListaClientes(MIDIA_CLI_BUSCA);
   }
-  catch(e){ view.innerHTML='<div class="note" style="background:rgba(244,96,107,.1);border-color:rgba(244,96,107,.3);color:#ffb3ba">Erro ao carregar: '+esc(e.message||e)+'</div>'; }
+  catch(e){ view.innerHTML='<div class="note" style="background:rgba(244,96,107,.1);border-color:rgba(244,96,107,.3);color:#ffb3ba">Erro ao carregar: '+(e.message||e)+'</div>'; }
 }
 
 function topbar(title,sub,actions=''){return `<div class="top"><div><h1>${title}</h1><div class="sub">${sub}</div></div><div class="top-actions">${actions}</div></div>`;}
@@ -737,7 +720,7 @@ const VIEWS = {
     const semMac = lista.filter(c=> !c.mac).length;
 
     const linhas = lista.map(c=>{
-      const on = estaOnline(c.last_seen_at);
+      const on = c.last_seen_at && (Date.now()-new Date(c.last_seen_at).getTime() < 5*60*1000);
       const hotel = c.accounts ? c.accounts.nome : '—';
       const cnpj  = c.accounts && c.accounts.cnpj ? c.accounts.cnpj : '';
       const pct = (c.storage_total && c.storage_livre != null)
@@ -755,9 +738,9 @@ const VIEWS = {
         <td style="color:var(--mut);font-size:12px">${pct!==null ? pct+'%<div class="est-sub">'+gb(c.storage_livre)+' livre</div>' : '—'}</td>
         <td><span class="stat ${on?'on':'off'}"><span class="dot ${on?'on':'off'}"></span>${on?'Online':'Offline'}</span>
             <div class="est-sub">${esc(c.player_version||'—')}</div></td>
-        <td style="color:var(--mut);font-size:12px;max-width:180px">${c.observacao ? esc(c.observacao) : '<span style="color:#4a4a52">—</span>'}</td>
+        <td style="color:var(--mut);font-size:12px;max-width:180px">${esc(c.observacao||'<span style="color:#4a4a52">—</span>')}</td>
         <td style="white-space:nowrap">
-          <button class="mini" onclick='editarInventario("${atr(c.id)}","${atr(c.nome)}")'>✎ Editar</button>
+          <button class="mini" onclick='editarInventario("${c.id}","${nomeEsc}")'>✎ Editar</button>
         </td>
       </tr>`;
     }).join('');
@@ -801,7 +784,7 @@ const VIEWS = {
         const visto=c.last_seen_at?tempoRel(c.last_seen_at):'nunca';
         const tags=(c.tags||[]);
         const tagsHtml = tags.length
-          ? tags.map(t=>'<span style="background:#1e1e24;color:var(--mut);font-size:10.5px;padding:2px 7px;border-radius:12px;margin-right:4px">'+esc(t)+'</span>').join('')
+          ? tags.map(t=>'<span style="background:#1e1e24;color:var(--mut);font-size:10.5px;padding:2px 7px;border-radius:12px;margin-right:4px">'+t+'</span>').join('')
           : '<span style="color:#4a4a52;font-size:11px">sem tags</span>';
         const pend = (c.autorizado === false);
         return `<tr class="row">
@@ -812,13 +795,13 @@ const VIEWS = {
           <td style="color:var(--mut)">${visto}</td>
           <td style="color:var(--mut)">${esc(c.player_version||'—')}</td>
           <td style="white-space:nowrap">
-            <button class="mini" onclick="verTela('${atr(c.id)}','${atr(c.nome)}')">◱ Ver tela</button>
-            ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick="acessoRemoto('${atr(c.id)}','${atr(c.nome)}')" title="${c.rustdesk_id?'RustDesk '+escA(c.rustdesk_id):'RustDesk não configurado'}">⧉ Remoto</button>`}
-            <button class="mini" onclick="pedirRefresh('${atr(c.id)}','${atr(c.nome)}')">⟳ Atualizar tela</button>
-            ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick='editarTags("${atr(c.id)}","${atr(c.nome)}","${atr(JSON.stringify(tags))}")'>⌗ Tags</button>`}
+            <button class="mini" onclick="verTela('${c.id}','${escJ(c.nome)}')">◱ Ver tela</button>
+            ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick="acessoRemoto('${c.id}','${escJ(c.nome)}')" title="${c.rustdesk_id?'RustDesk '+escA(c.rustdesk_id):'RustDesk não configurado'}">⧉ Remoto</button>`}
+            <button class="mini" onclick="pedirRefresh('${c.id}','${escJ(c.nome)}')">⟳ Atualizar tela</button>
+            ${COLS_EXTRAS===false ? '' : `<button class="mini" onclick='editarTags("${c.id}","${escA(c.nome)}",${escA(JSON.stringify(tags))})'>⌗ Tags</button>`}
             ${COLS_EXTRAS===false ? '' : pend
-              ? `<button class="mini" style="background:#332a10;border-color:#4a3d1c;color:#F5C518" onclick='autorizar("${atr(c.id)}",true,"${atr(c.nome)}")'>✓ Autorizar</button>`
-              : `<button class="mini" onclick='autorizar("${atr(c.id)}",false,"${atr(c.nome)}")' title="revogar autorização">⊘</button>`}
+              ? `<button class="mini" style="background:#332a10;border-color:#4a3d1c;color:#F5C518" onclick='autorizar("${c.id}",true,"${escA(c.nome)}")'>✓ Autorizar</button>`
+              : `<button class="mini" onclick='autorizar("${c.id}",false,"${escA(c.nome)}")' title="revogar autorização">⊘</button>`}
           </td>
         </tr>`;
       }).join('');
@@ -867,7 +850,7 @@ const VIEWS = {
       rows='<tr><td colspan="6"><div class="empty"><b>Nenhuma estação ainda</b>Cadastre uma conta primeiro, depois adicione os canais (boxes) dela.</div></td></tr>';
     } else {
       rows=chs.map(c=>{
-        const online = estaOnline(c.last_seen_at);
+        const online = c.last_seen_at && (Date.now()-new Date(c.last_seen_at).getTime() < 5*60*1000);
         const visto = c.last_seen_at ? tempoRel(c.last_seen_at) : 'nunca';
         const url = location.origin+location.pathname.replace(/index\.html$/,'')+'player.html?token='+c.device_token;
         const cod = c.codigo_curto||'—';
@@ -880,11 +863,11 @@ const VIEWS = {
           <td style="color:var(--mut)">${esc(c.player_version||'—')}
               <div class="est-sub">${nProg? nProg+' na programação' : 'sem programação'}${c.ativo?'':' · INATIVO'}</div></td>
           <td style="white-space:nowrap">
-            <button class="mini" onclick="copiarCodigo('${atr(cod)}')">⧉ Código</button>
-            <button class="mini" onclick="copiarURL('${atr(url)}')">⧉ URL</button>
-            <button class="mini" onclick='renomearCanal("${atr(c.id)}","${atr(c.nome)}")'>✎ Renomear</button>
-            <button class="mini" onclick='alternarCanal("${atr(c.id)}","${atr(c.nome)}",${c.ativo?'false':'true'})'>${c.ativo?'⊘ Inativar':'✓ Reativar'}</button>
-            <button class="mini danger" onclick='excluirCanal("${atr(c.id)}","${atr(c.nome)}",${Number(nPl[c.id])||0})'>🗑</button>
+            <button class="mini" onclick="copiarCodigo('${cod}')">⧉ Código</button>
+            <button class="mini" onclick="copiarURL('${escJ(url)}')">⧉ URL</button>
+            <button class="mini" onclick='renomearCanal("${c.id}","${escA(c.nome)}")'>✎ Renomear</button>
+            <button class="mini" onclick='alternarCanal("${c.id}","${escA(c.nome)}",${c.ativo?'false':'true'})'>${c.ativo?'⊘ Inativar':'✓ Reativar'}</button>
+            <button class="mini danger" onclick='excluirCanal("${c.id}","${escA(c.nome)}",${nPl[c.id]||0})'>🗑</button>
           </td></tr>`;
       }).join('');
     }
@@ -899,6 +882,40 @@ const VIEWS = {
     if(error) throw error;
     return topbar('Biblioteca de Mídia','Todas as contas · '+(meds?meds.length:0)+' item(ns)', `<button class="solid" onclick="novaMidia()">⬆ Subir mídia</button>`)
       + mediaPanelReal(meds, true);
+  },
+  async clientes(){
+    // contas: busca de novo a cada entrada na tela (senão uma conta criada
+    // agora só apareceria depois de logout/login) — o cache só evita refetch
+    // a cada tecla digitada na busca, que nunca dispara fetch nenhum, já que
+    // o filtro roda em cima do array já carregado nesta renderização
+    const { data: accsData, error: aErr } = await sb.from('accounts').select('id,nome').eq('ativo',true).order('nome');
+    if(aErr) throw aErr;
+    MIDIA_CLI_ACCS = accsData || [];
+    // mídia: sempre busca de novo (é o dado que muda), já traz o nome da conta
+    const { data: meds, error: mErr } = await sb.from('media')
+      .select('id,nome,tipo,storage_path,duracao_seg,tamanho_bytes,account_id,accounts(nome)')
+      .order('created_at',{ascending:false});
+    if(mErr) throw mErr;
+    MIDIA_CLI_CONT = {};
+    meds.forEach(m=> MIDIA_CLI_CONT[m.account_id] = (MIDIA_CLI_CONT[m.account_id]||0)+1 );
+    MIDIA_CLI_TOTAL = meds.length;
+
+    const medsFiltrados = MIDIA_CLI_SEL ? meds.filter(m=>m.account_id===MIDIA_CLI_SEL) : meds;
+    const nomeSel = esc(MIDIA_CLI_SEL ? (MIDIA_CLI_ACCS.find(a=>a.id===MIDIA_CLI_SEL)||{}).nome||'—' : 'Todos os clientes');
+
+    return topbar('Clientes', nomeSel+' · '+medsFiltrados.length+' item(ns)', `<button class="solid" onclick="novaMidia()">⬆ Subir mídia</button>`)
+      + `<div class="panel cli-panel">
+          <div class="cli-side">
+            <div class="cli-search">
+              <div class="cli-search-wrap">
+                <span class="cli-search-ic">⌕</span>
+                <input id="cliBusca" placeholder="Buscar cliente" value="${escA(MIDIA_CLI_BUSCA)}" oninput="renderListaClientes(this.value)">
+              </div>
+            </div>
+            <div class="cli-list" id="cliList"></div>
+          </div>
+          <div class="mgrid" id="cliGrid">${mediaCardsHtml(medsFiltrados, !MIDIA_CLI_SEL)}</div>
+        </div>`;
   },
   async prog(){
     // se um canal está selecionado, mostra o editor; senão, a lista de canais
@@ -923,7 +940,7 @@ const VIEWS = {
       const selo = n
         ? `<span class="badge live">${n} ${n===1?'item':'itens'} no ar</span>`
         : `<span class="badge paused">programação vazia</span>`;
-      return `<tr class="row" style="cursor:pointer" onclick="abrirProg('${atr(c.id)}')">
+      return `<tr class="row" style="cursor:pointer" onclick="abrirProg('${c.id}')">
       <td><div class="est-name">${esc(c.accounts?c.accounts.nome:'—')}</div><div class="est-sub">Canal: ${esc(c.nome)}</div></td>
       <td>${selo}</td>
       <td style="text-align:right"><button class="mini">Montar programação →</button></td></tr>`;
@@ -932,6 +949,7 @@ const VIEWS = {
       +`<div class="panel"><table><tbody>${rows}</tbody></table></div>`;
   },
   async camp(){
+    const hoje = new Date().toISOString().slice(0,10);
     const { data: camps, error } = await sb.from('campaigns')
       .select('id,nome,data_inicio,data_fim,frequencia_a_cada,ativo,account_id,accounts(nome)')
       .order('data_inicio',{ascending:false});
@@ -941,8 +959,11 @@ const VIEWS = {
       rows = `<div class="empty"><b>Nenhuma campanha ainda</b>Crie uma campanha temporária (ex: Dia das Mães) que sobe e sai sozinha por data.</div>`;
     } else {
       rows = camps.map(c=>{
-        const _s = statusCampanha(c);
-        const st = _s.t, badge = _s.k;
+        let st, badge;
+        if(!c.ativo){ st='Pausada'; badge='paused'; }
+        else if(hoje < c.data_inicio){ st='Agendada'; badge='sched'; }
+        else if(hoje > c.data_fim){ st='Encerrada'; badge='done'; }
+        else { st='No ar'; badge='live'; }
         const di=dataBR(c.data_inicio);
         const df=dataBR(c.data_fim);
         return `<div class="camp">
@@ -950,9 +971,9 @@ const VIEWS = {
           <div class="camp-main"><div class="cn">${esc(c.nome)}</div><div class="cd">${di} → ${df} · ${esc(c.accounts?c.accounts.nome:'')}</div></div>
           <span class="freq">1 a cada ${esc(c.frequencia_a_cada)}</span>
           <span class="badge ${badge}">${badge==='live'?'● ':''}${st}</span>
-          <button class="mini" onclick="togglePausaCampanha('${atr(c.id)}',${c.ativo ? 'true' : 'false'})">${c.ativo?'⏸ Pausar':'▶ Retomar'}</button>
-          <button class="mini" onclick="editarCampanha('${atr(c.id)}')">Editar</button>
-          <button class="mini danger" onclick="excluirCampanha('${atr(c.id)}','${atr(c.nome)}')">Excluir</button>
+          <button class="mini" onclick="togglePausaCampanha('${c.id}',${esc(c.ativo)})">${c.ativo?'⏸ Pausar':'▶ Retomar'}</button>
+          <button class="mini" onclick="editarCampanha('${c.id}')">Editar</button>
+          <button class="mini danger" onclick="excluirCampanha('${c.id}','${escJ(c.nome)}')">Excluir</button>
         </div>`;
       }).join('');
     }
@@ -989,9 +1010,9 @@ const VIEWS = {
           <td style="color:var(--mut)">${n} canal${n===1?'':'is'}</td>
           <td style="white-space:nowrap">
             <button class="mini" onclick="CUR='usuarios';buildNav();render()">Usuários</button>
-            <button class="mini" onclick='alternarConta("${atr(a.id)}","${atr(a.nome)}",${a.ativo?'false':'true'})'>${a.ativo?'⊘ Inativar':'✓ Reativar'}</button>
+            <button class="mini" onclick='alternarConta("${a.id}","${nomeEsc}",${a.ativo?'false':'true'})'>${a.ativo?'⊘ Inativar':'✓ Reativar'}</button>
             ${n===0
-              ? `<button class="mini danger" onclick='excluirConta("${atr(a.id)}","${atr(a.nome)}")'>🗑 Excluir</button>`
+              ? `<button class="mini danger" onclick='excluirConta("${a.id}","${nomeEsc}")'>🗑 Excluir</button>`
               : `<button class="mini" disabled style="opacity:.35;cursor:not-allowed" title="Conta com canal não pode ser excluída. Remova os canais primeiro ou apenas inative.">🗑 Excluir</button>`}
           </td>
         </tr>`;
@@ -1037,10 +1058,10 @@ const VIEWS = {
           <td><span class="badge ${ativo?'live':'paused'}">${ativo?'Ativo':'Inativo'}</span></td>
           <td>${listaH}</td>
           <td style="white-space:nowrap">
-            <button class="mini" onclick='editarUsuario("${atr(p.id)}")'>✎ Editar</button>
-            <button class="mini" onclick='trocarSenha("${atr(p.id)}","${atr(p.nome)}")'>🔑 Senha</button>
-            <button class="mini" onclick='alternarUsuario("${atr(p.id)}","${atr(p.nome)}",${ativo?'false':'true'})'>${ativo?'⊘ Inativar':'✓ Reativar'}</button>
-            <button class="mini danger" onclick='excluirUsuario("${atr(p.id)}","${atr(p.nome)}")'>🗑</button>
+            <button class="mini" onclick='editarUsuario("${p.id}")'>✎ Editar</button>
+            <button class="mini" onclick='trocarSenha("${p.id}","${nEsc}")'>🔑 Senha</button>
+            <button class="mini" onclick='alternarUsuario("${p.id}","${nEsc}",${ativo?'false':'true'})'>${ativo?'⊘ Inativar':'✓ Reativar'}</button>
+            <button class="mini danger" onclick='excluirUsuario("${p.id}","${nEsc}")'>🗑</button>
           </td>
         </tr>`;
       }).join('');
@@ -1083,6 +1104,46 @@ const VIEWS = {
     return topbar('Minha Mídia', CLI_ACC.nome+' · '+(meds?meds.length:0)+' item(ns)', `<button class="solid" onclick="novaMidia()">⬆ Subir mídia</button>`)
       + mediaPanelReal(meds, false);
   },
+  async cli_camp(){
+    // "Minhas Campanhas" no menu do cliente apontava pra uma tela que nunca
+    // foi implementada (só existia cli_prog/cli_midia/cli_canais) — o item
+    // caía no fallback genérico do render() e mostrava só um "—" vazio.
+    // Mesma lógica de camp() (admin), só filtrada pela conta do cliente e
+    // sem repetir o nome dela em cada campanha (já sabe qual conta é a dela).
+    if(!CLI_ACC) return '';
+    const hoje = new Date().toISOString().slice(0,10);
+    const { data: camps, error } = await sb.from('campaigns')
+      .select('id,nome,data_inicio,data_fim,frequencia_a_cada,ativo,account_id')
+      .eq('account_id', CLI_ACC.id)
+      .order('data_inicio',{ascending:false});
+    if(error) throw error;
+    let rows;
+    if(!camps || camps.length===0){
+      rows = `<div class="empty"><b>Nenhuma campanha ainda</b>Crie uma campanha temporária (ex: Dia das Mães) que sobe e sai sozinha por data.</div>`;
+    } else {
+      rows = camps.map(c=>{
+        let st, badge;
+        if(!c.ativo){ st='Pausada'; badge='paused'; }
+        else if(hoje < c.data_inicio){ st='Agendada'; badge='sched'; }
+        else if(hoje > c.data_fim){ st='Encerrada'; badge='done'; }
+        else { st='No ar'; badge='live'; }
+        const di=dataBR(c.data_inicio);
+        const df=dataBR(c.data_fim);
+        return `<div class="camp">
+          <div class="camp-ic" style="background:rgba(245,168,0,.18);border:1px solid rgba(245,168,0,.4)">◷</div>
+          <div class="camp-main"><div class="cn">${esc(c.nome)}</div><div class="cd">${di} → ${df}</div></div>
+          <span class="freq">1 a cada ${esc(c.frequencia_a_cada)}</span>
+          <span class="badge ${badge}">${badge==='live'?'● ':''}${st}</span>
+          <button class="mini" onclick="togglePausaCampanha('${c.id}',${esc(c.ativo)})">${c.ativo?'⏸ Pausar':'▶ Retomar'}</button>
+          <button class="mini" onclick="editarCampanha('${c.id}')">Editar</button>
+          <button class="mini danger" onclick="excluirCampanha('${c.id}','${escJ(c.nome)}')">Excluir</button>
+        </div>`;
+      }).join('');
+    }
+    return topbar('Minhas Campanhas', CLI_ACC.nome+' · entra no rodízio no período, sai sozinha quando a data passa', `<button class="solid" onclick="novaCampanha()">＋ Nova campanha</button>`)
+      + agendaPanel(camps||[])
+      + `<div class="panel"><div class="panel-h"><h3>Campanhas</h3><span class="hint">rodízio: padrão · padrão · campanha · padrão…</span></div>${rows}</div>`;
+  },
   async cli_canais(){
     if(!CLI_ACC) return '';
     const { data: chs, error } = await sb.from('channels')
@@ -1099,7 +1160,7 @@ const VIEWS = {
           <td><div class="est-name">${esc(c.nome)}</div></td>
           <td><span class="stat ${online?'on':'off'}"><span class="dot ${online?'on':'off'}"></span>${online?'Online':'Offline'}</span></td>
           <td style="color:var(--mut)">${visto}</td>
-          <td style="white-space:nowrap"><button class="mini" onclick="pedirRefresh('${atr(c.id)}','${atr(c.nome)}')">⟳ Atualizar tela</button></td>
+          <td style="white-space:nowrap"><button class="mini" onclick="pedirRefresh('${c.id}','${escJ(c.nome)}')">⟳ Atualizar tela</button></td>
         </tr>`;
       }).join('');
     }
@@ -1140,7 +1201,8 @@ function agSod(d){return new Date(d.getFullYear(),d.getMonth(),d.getDate());}
 function agAdd(d,n){const x=new Date(d);x.setDate(x.getDate()+n);return x;}
 function agSame(a,b){return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate();}
 function agIso(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
-function agStatus(c){ return statusCampanha(c).k; }
+function agStatus(c){const hoje=new Date().toISOString().slice(0,10);
+  if(!c.ativo)return'paused'; if(hoje<c.data_inicio)return'sched'; if(hoje>c.data_fim)return'done'; return'live';}
 function agPrev(){AG_REF=new Date(AG_REF.getFullYear(),AG_REF.getMonth()-1,1);render();}
 function agNext(){AG_REF=new Date(AG_REF.getFullYear(),AG_REF.getMonth()+1,1);render();}
 function agHoje(){const d=new Date();AG_REF=new Date(d.getFullYear(),d.getMonth(),1);render();}
@@ -1161,7 +1223,7 @@ function agendaPanel(camps){
     days.forEach(day=>{
       const out=day.getMonth()!==AG_REF.getMonth()?' out':'';
       const td=agSame(day,hoje)?' today':'';
-      daysHtml+=`<div class="ag-day${out}${td}" onclick="agDia('${atr(agIso(day))}')"><div class="ag-n">${day.getDate()}</div></div>`;
+      daysHtml+=`<div class="ag-day${out}${td}" onclick="agDia('${agIso(day)}')"><div class="ag-n">${day.getDate()}</div></div>`;
     });
     // barras
     const segs=(camps||[]).filter(c=>agSod(agParse(c.data_inicio))<=we&&agSod(agParse(c.data_fim))>=ws)
@@ -1180,7 +1242,7 @@ function agendaPanel(camps){
       const cls='ag-ev '+st+(sh?' s':'')+(eh?' e':'');
       const left=(c0/7*100), width=((c1-c0+1)/7*100);
       const nm=(c.nome||'').replace(/</g,'&lt;').replace(/"/g,'&quot;');
-      barsHtml+=`<div class="${cls}" title="${nm}" onclick="event.stopPropagation();agDia('${atr(agIso(s<ws?ws:s))}')" `
+      barsHtml+=`<div class="${cls}" title="${nm}" onclick="event.stopPropagation();agDia('${agIso(s<ws?ws:s)}')" `
         +`style="left:calc(${left}% + 4px);width:calc(${width}% - 8px);top:${lane*LANE_H}px"><span class="dot"></span><span>${nm}</span></div>`;
     });
     days.forEach((day,i)=>{const ex=(laneCount[i]||0)-MAX;if(ex>0){
@@ -1232,7 +1294,7 @@ function agDia(iso){
         <div class="meta">
           <div>Período<b>${di} → ${df}</b></div>
           <div>Frequência<b>1 a cada ${esc(c.frequencia_a_cada)}</b></div>
-          ${hotel?`<div>Hotel<b>${esc(hotel)}</b></div>`:''}
+          ${hotel?`<div>Hotel<b>${hotel}</b></div>`:''}
         </div></div>`;
     }).join('')+'</div>';
   }
@@ -1434,7 +1496,7 @@ async function salvarEdicaoUsuario(id){
 
 function trocarSenha(id, nome){
   abrirModal(
-    '<h3>Trocar senha</h3><div class="fsub">'+esc(nome)+'</div>'+
+    '<h3>Trocar senha</h3><div class="fsub">'+nome+'</div>'+
     '<div class="fld"><label>Nova senha</label><input id="gu_senha" type="password" autocomplete="new-password" placeholder="mínimo 6 caracteres"></div>'+
     '<div style="color:var(--mut);font-size:11.5px">A pessoa passa a usar esta senha imediatamente. '+
       'Sessões abertas continuam válidas até expirarem.</div>'+
@@ -1610,11 +1672,13 @@ function fmtDur(seg){
   return m>0 ? (m+':'+String(s).padStart(2,'0')) : (s+'s');
 }
 
-function mediaPanelReal(list, isAdmin){
+// gera só os cards (sem o .panel em volta) — reaproveitado pela Biblioteca
+// de Mídia normal e pela tela Clientes, que já tem seu próprio wrapper
+function mediaCardsHtml(list, isAdmin){
   if(!list || list.length===0){
-    return `<div class="panel"><div class="empty"><b>Nenhuma mídia ainda</b>Clique em “Subir mídia” para enviar sua primeira imagem ou vídeo.</div></div>`;
+    return `<div class="empty" style="grid-column:1/-1"><b>Nenhuma mídia ainda</b>Clique em “Subir mídia” para enviar sua primeira imagem ou vídeo.</div>`;
   }
-  const cards=list.map(m=>{
+  return list.map(m=>{
     const url = SB_PUBLIC_BASE + m.storage_path;
     const isVid = m.tipo==='video';
     const thumb = isVid
@@ -1630,13 +1694,47 @@ function mediaPanelReal(list, isAdmin){
         <div class="mt">${esc(m.nome)}</div>
         <div class="ms">${isVid? fmtDur(m.duracao_seg) : (m.duracao_seg!=null ? m.duracao_seg+'s na tela' : 'imagem')}${tam?' · '+tam:''}${isAdmin&&m.accounts?' · '+esc(m.accounts.nome):''}</div>
         <div class="mactions">
-          <button class="mini" onclick="editarMidia('${atr(m.id)}','${atr(m.nome)}',${m.duracao_seg == null ? 'null' : Number(m.duracao_seg)},'${atr(m.tipo)}')">✎ Editar</button>
-          <button class="mini danger" onclick="excluirMidia('${atr(m.id)}','${atr(m.storage_path)}','${atr(m.nome)}')">🗑 Excluir</button>
+          <button class="mini" onclick="editarMidia('${m.id}','${escJ(m.nome)}',${esc(m.duracao_seg)},'${m.tipo}')">✎ Editar</button>
+          <button class="mini danger" onclick="excluirMidia('${m.id}','${escJ(m.storage_path)}','${escJ(m.nome)}')">🗑 Excluir</button>
         </div>
       </div>
     </div>`;
   }).join('');
-  return `<div class="panel"><div class="panel-h"><h3>Biblioteca</h3><span class="hint">o player faz cache local no box</span></div><div class="mgrid">${cards}</div></div>`;
+}
+
+function mediaPanelReal(list, isAdmin){
+  if(!list || list.length===0){
+    return `<div class="panel"><div class="empty"><b>Nenhuma mídia ainda</b>Clique em “Subir mídia” para enviar sua primeira imagem ou vídeo.</div></div>`;
+  }
+  return `<div class="panel"><div class="panel-h"><h3>Biblioteca</h3><span class="hint">o player faz cache local no box</span></div><div class="mgrid">${mediaCardsHtml(list, isAdmin)}</div></div>`;
+}
+
+/* ---------------- MÍDIA: tela Clientes (lista + busca) ---------------- */
+function linhaCliente(id, nome, count, ativa){
+  return `<div class="cli-row ${ativa?'active':''}" onclick="selecionarClienteMidia(${id===null?'null':`'${id}'`})">
+    <span>${esc(nome)}</span><span class="n">${count}</span></div>`;
+}
+
+// Redesenha só a lista de clientes (#cliList), sem tocar no <input> de busca
+// nem no grid — assim digitar não refaz a consulta no banco nem tira o foco.
+function renderListaClientes(valor){
+  MIDIA_CLI_BUSCA = valor;
+  const el = document.getElementById('cliList');
+  if(!el) return;
+  const q = valor.trim().toLowerCase();
+  const contas = (MIDIA_CLI_ACCS||[]).filter(a=> (a.nome||'').toLowerCase().includes(q));
+  let html = '';
+  if(!q) html += linhaCliente(null, 'Todos os clientes', MIDIA_CLI_TOTAL, MIDIA_CLI_SEL===null);
+  html += contas.map(a=> linhaCliente(a.id, a.nome, MIDIA_CLI_CONT[a.id]||0, MIDIA_CLI_SEL===a.id)).join('');
+  if(q && contas.length===0) html += '<div class="cli-empty">Nenhum cliente encontrado</div>';
+  el.innerHTML = html;
+}
+
+// Selecionar cliente já refaz a mídia (o dado que realmente muda), então
+// aqui sim vale a pena passar pelo render() normal da tela.
+function selecionarClienteMidia(id){
+  MIDIA_CLI_SEL = id;
+  render();
 }
 
 async function excluirMidia(id, path, nome){
@@ -1651,24 +1749,17 @@ async function excluirMidia(id, path, nome){
   }catch(ex){ alert('Erro ao excluir: '+(ex.message||ex)); }
 }
 
-/* dur pode chegar null: linhas antigas e vídeos nunca gravaram duração.
-   Antes, a emissão passava esc(dur) e null virava string vazia, produzindo
-   editarMidia('id','nome',,'image') — vaga de argumento vazia, erro de
-   sintaxe, e o botão Editar não abria nada. esc() serve para texto em HTML,
-   não para literal em argumento de função. */
 function editarMidia(id, nome, dur, tipo){
   const isVid = tipo==='video';
-  const DUR_PADRAO = 8;
-  const durNum = (dur == null || isNaN(Number(dur))) ? DUR_PADRAO : Number(dur);
   abrirModal(`
     <h3>Editar mídia</h3>
     <div class="fsub">Altere o nome${isVid?'':' ou o tempo na tela'}.</div>
     <div class="fld"><label>Nome / título</label><input id="em_nome" value="${escA(nome)}"></div>
-    ${isVid?'':`<div class="fld"><label>Tempo na tela (segundos)</label><input id="em_dur" type="number" value="${durNum}" min="3" max="60"></div>`}
+    ${isVid?'':`<div class="fld"><label>Tempo na tela (segundos)</label><input id="em_dur" type="number" value="${escA(dur)}" min="3" max="60"></div>`}
     <div id="em_msg" class="fmsg"></div>
     <div class="form-actions">
       <button class="fa-cancel" onclick="fecharModal()">Cancelar</button>
-      <button class="fa-save" onclick="salvarEdicaoMidia('${atr(id)}','${atr(tipo)}')">Salvar</button>
+      <button class="fa-save" onclick="salvarEdicaoMidia('${id}','${tipo}')">Salvar</button>
     </div>`);
 }
 async function salvarEdicaoMidia(id, tipo){
@@ -1710,7 +1801,7 @@ async function progEditor(chId){
     return `<div class="pl-item">
       <div class="pl-th">${th}</div>
       <div class="pl-meta"><div class="pl-nm">${esc(m.nome)}</div><div class="pl-sub">${isVid?'vídeo · '+fmtDur(m.duracao_seg):m.duracao_seg+'s'}</div></div>
-      <button class="mini" onclick="addToProg('${atr(chId)}','${atr(ch.account_id)}','${atr(m.id)}')">＋ Incluir</button>
+      <button class="mini" onclick="addToProg('${chId}','${ch.account_id}','${m.id}')">＋ Incluir</button>
     </div>`;
   }).join('')
     : ((meds && meds.length)
@@ -1735,15 +1826,15 @@ async function progEditor(chId){
       <div class="pl-th">${th}</div>
       <div class="pl-meta"><div class="pl-nm">${esc(m.nome)}</div><div class="pl-sub">${isVid?'vídeo · '+fmtDur(m.duracao_seg):m.duracao_seg+'s'}</div></div>
       <div class="pl-btns">
-        <button class="mini" onclick="moveProg('${atr(it.id)}',-1)" ${i===0?'disabled':''}>↑</button>
-        <button class="mini" onclick="moveProg('${atr(it.id)}',1)" ${i===items.length-1?'disabled':''}>↓</button>
-        <button class="mini danger" onclick="removeFromProg('${atr(it.id)}')">✕</button>
+        <button class="mini" onclick="moveProg('${it.id}',-1)" ${i===0?'disabled':''}>↑</button>
+        <button class="mini" onclick="moveProg('${it.id}',1)" ${i===items.length-1?'disabled':''}>↓</button>
+        <button class="mini danger" onclick="removeFromProg('${it.id}')">✕</button>
       </div>
     </div>`;
   }).join('');
   const seqHtml = (items&&items.length)?seq:'<div class="empty" style="padding:30px"><b>Programação vazia</b>Inclua mídias da biblioteca ao lado. Elas tocarão nesta ordem, em loop.</div>';
 
-  const addAll = disponiveis.length ? `<button class="ghost" onclick="addAllProg('${atr(chId)}','${atr(ch.account_id)}')">＋ Incluir todas</button>` : '';
+  const addAll = disponiveis.length ? `<button class="ghost" onclick="addAllProg('${chId}','${ch.account_id}')">＋ Incluir todas</button>` : '';
 
   const resumo = 'O que toca neste canal, em ordem, em loop · '
     + (meds ? meds.length : 0) + ' mídia(s) na conta · '
@@ -1883,89 +1974,29 @@ async function salvarCampanha(editId){
   if(midias.length===0){ msg.className='fmsg err'; msg.textContent='Escolha ao menos uma mídia.'; return; }
   if(canais.length===0){ msg.className='fmsg err'; msg.textContent='Escolha ao menos um canal.'; return; }
   msg.className='fmsg'; msg.textContent='Salvando…';
-
-  /* EDIÇÃO É APAGAR E REGRAVAR, E NÃO HÁ TRANSAÇÃO AQUI.
-     Se a regravação falhasse depois dos apagamentos, a campanha continuava
-     existindo mas sem mídia e sem canal: seguia "no ar" no painel e saía do
-     rodízio de todos os boxes, em silêncio.
-     Mesma disciplina aplicada no moveProg: guardar o estado anterior, checar
-     cada passo, e restaurar se algum falhar. */
-  let backupItens = null, backupCanais = null, apagou = false, criouCampanha = false;
-  let campIdCriado = null;
-
   try{
     let campId=editId;
-
     if(editId){
-      // estado atual guardado ANTES de qualquer remoção
-      const [antIt, antCh] = await Promise.all([
-        sb.from('campaign_items').select('account_id,campaign_id,media_id,posicao').eq('campaign_id',editId),
-        sb.from('campaign_channels').select('account_id,campaign_id,channel_id').eq('campaign_id',editId)
-      ]);
-      if(antIt.error) throw antIt.error;
-      if(antCh.error) throw antCh.error;
-      backupItens  = antIt.data || [];
-      backupCanais = antCh.data || [];
-
       const { error } = await sb.from('campaigns').update({ nome, data_inicio, data_fim, frequencia_a_cada }).eq('id',editId);
       if(error) throw error;
-
-      /* marcado ANTES do primeiro apagamento: a partir daqui qualquer falha
-         pode ter deixado estado parcial, e a restauração precisa rodar.
-         Marcar só depois dos dois deixava um buraco — se o segundo falhasse,
-         o primeiro já havia removido os itens e nada era restaurado. */
-      apagou = true;
-      const d1 = await sb.from('campaign_items').delete().eq('campaign_id',editId);
-      if(d1.error) throw d1.error;
-      const d2 = await sb.from('campaign_channels').delete().eq('campaign_id',editId);
-      if(d2.error) throw d2.error;
+      // limpa itens e canais antigos pra regravar
+      await sb.from('campaign_items').delete().eq('campaign_id',editId);
+      await sb.from('campaign_channels').delete().eq('campaign_id',editId);
     } else {
       const { data, error } = await sb.from('campaigns')
         .insert({ account_id, nome, data_inicio, data_fim, frequencia_a_cada, ativo:true })
         .select('id').single();
       if(error) throw error;
       campId=data.id;
-      campIdCriado = data.id;
-      criouCampanha = true;
     }
-
     // grava mídias e canais
     const itens=midias.map((mid,i)=>({ account_id, campaign_id:campId, media_id:mid, posicao:i }));
     const cans=canais.map(cid=>({ campaign_id:campId, channel_id:cid, account_id }));
     const r1=await sb.from('campaign_items').insert(itens);   if(r1.error) throw r1.error;
     const r2=await sb.from('campaign_channels').insert(cans);  if(r2.error) throw r2.error;
-
     msg.className='fmsg ok'; msg.textContent='Campanha salva!';
     setTimeout(()=>{ fecharModal(); render(); }, 500);
-
-  }catch(ex){
-    let extra = '';
-
-    // edição: devolve o conteúdo anterior, para a campanha não ficar vazia
-    if(apagou){
-      try{
-        await sb.from('campaign_items').delete().eq('campaign_id', editId);
-        await sb.from('campaign_channels').delete().eq('campaign_id', editId);
-        if(backupItens  && backupItens.length)  await sb.from('campaign_items').insert(backupItens);
-        if(backupCanais && backupCanais.length) await sb.from('campaign_channels').insert(backupCanais);
-        extra = ' O conteúdo anterior da campanha foi restaurado.';
-      }catch(e2){
-        /* não conseguiu restaurar: o usuário PRECISA saber, porque a campanha
-           ficou existindo sem mídia e sem canal, e some do rodízio sem avisar */
-        extra = ' ATENÇÃO: não foi possível restaurar o conteúdo anterior. '
-              + 'Esta campanha está sem mídias e sem canais e não vai tocar. '
-              + 'Abra novamente e salve para recompor.';
-      }
-    }
-
-    // criação: campanha recém-criada sem conteúdo não deve permanecer
-    if(criouCampanha){
-      try{ await sb.from('campaigns').delete().eq('id', campIdCriado); }catch(e3){}
-    }
-
-    msg.className='fmsg err';
-    msg.textContent='Erro: '+(ex.message||ex)+extra;
-  }
+  }catch(ex){ msg.className='fmsg err'; msg.textContent='Erro: '+(ex.message||ex); }
 }
 
 async function editarCampanha(id){
@@ -1975,24 +2006,32 @@ async function editarCampanha(id){
     sb.from('campaign_items').select('media_id').eq('campaign_id',id),
     sb.from('campaign_channels').select('channel_id').eq('campaign_id',id)
   ]);
-  const { data: accs } = await sb.from('accounts').select('id,nome').eq('ativo',true).order('nome');
-  const opts=accs.map(a=>`<option value="${a.id}" ${a.id===c.account_id?'selected':''}>${esc(a.nome)}</option>`).join('');
+  let accField;
+  if(ROLE==='cli' && CLI_ACC){
+    // cliente: mostra só o próprio hotel, sem listar as contas de outros clientes
+    accField = `<input type="hidden" id="cp_acc" value="${CLI_ACC.id}">
+      <div class="fld"><label>Conta (hotel)</label><input value="${escA(CLI_ACC.nome)}" disabled></div>`;
+  } else {
+    const { data: accs } = await sb.from('accounts').select('id,nome').eq('ativo',true).order('nome');
+    const opts=accs.map(a=>`<option value="${a.id}" ${a.id===c.account_id?'selected':''}>${esc(a.nome)}</option>`).join('');
+    accField = `<div class="fld"><label>Conta (hotel)</label><select id="cp_acc" disabled>${opts}</select></div>`;
+  }
   abrirModal(`
     <h3>Editar campanha</h3>
     <div class="fsub">Conta fixa. Ajuste datas, frequência, mídias e canais.</div>
-    <div class="fld"><label>Conta (hotel)</label><select id="cp_acc" disabled>${opts}</select></div>
+    ${accField}
     <div class="fld"><label>Nome da campanha</label><input id="cp_nome" value="${escA(c.nome)}"></div>
     <div style="display:flex;gap:10px">
       <div class="fld" style="flex:1"><label>Início</label><input id="cp_ini" type="date" value="${escA(c.data_inicio)}"></div>
       <div class="fld" style="flex:1"><label>Fim</label><input id="cp_fim" type="date" value="${escA(c.data_fim)}"></div>
     </div>
-    <div class="fld"><label>Frequência da campanha no rodízio</label><input id="cp_freq" type="number" value="${escA(c.frequencia_a_cada)}" min="1" max="20"><div style="font-size:11px;color:var(--mut);margin-top:5px">Quanto menor o número, mais a campanha aparece. Ela sempre entra ao menos 1x por volta.</div></div>
+    <div class="fld"><label>Frequência da campanha no rodízio</label><input id="cp_freq" type="number" value="${esc(c.frequencia_a_cada)}" min="1" max="20"><div style="font-size:11px;color:var(--mut);margin-top:5px">Quanto menor o número, mais a campanha aparece. Ela sempre entra ao menos 1x por volta.</div></div>
     <div class="fld"><label>Mídias da campanha</label><div id="cp_midias" class="checkbox-grid">…</div></div>
     <div class="fld"><label>Toca em quais canais</label><div id="cp_canais" class="checkbox-grid">…</div></div>
     <div id="cp_msg" class="fmsg"></div>
     <div class="form-actions">
       <button class="fa-cancel" onclick="fecharModal()">Cancelar</button>
-      <button class="fa-save" onclick="salvarCampanha('${atr(id)}')">Salvar alterações</button>
+      <button class="fa-save" onclick="salvarCampanha('${id}')">Salvar alterações</button>
     </div>`);
   carregarMidiasCanais((its||[]).map(x=>x.media_id), (chs||[]).map(x=>x.channel_id));
 }
@@ -2036,7 +2075,7 @@ async function verTela(channelId, nomeCanal){
   const nomeEsc = escJ(nomeCanal);
   abrirModal(
     '<h3>Tela do box</h3>'+
-    '<div class="fsub">'+esc(nomeCanal||'')+'</div>'+
+    '<div class="fsub">'+ (nomeCanal||'') +'</div>'+
     '<div id="snapWrap" style="margin:12px 0;min-height:170px;display:flex;align-items:center;'+
       'justify-content:center;background:#000;border-radius:10px;overflow:hidden">'+
       '<div style="color:#8a8a92;font-size:12.5px;padding:26px;text-align:center">'+
@@ -2133,7 +2172,7 @@ async function editarInventario(channelId, nomeCanal){
     if(data) atual = data;
   }catch(e){}
   abrirModal(
-    '<h3>Dispositivo</h3><div class="fsub">'+esc(nomeCanal||'')+'</div>'+
+    '<h3>Dispositivo</h3><div class="fsub">'+(nomeCanal||'')+'</div>'+
     '<div class="fld"><label>MAC do box</label>'+
       '<input id="iv_mac" placeholder="9C:00:D3:CC:83:5E" maxlength="17" '+
       'value="'+String(atual.mac||'').replace(/"/g,'&quot;')+'"></div>'+
@@ -2239,12 +2278,7 @@ async function autorizar(channelId, valor, nome){
   }catch(e){ alert('Erro: '+((e&&e.message)||e)); }
 }
 
-/* atuais chega como JSON em string, não como array interpolado.
-   Interpolar o array direto colocava aspas duplas cruas dentro do argumento;
-   um valor com aspa encerrava a string e o handler virava sintaxe inválida. */
-async function editarTags(channelId, nome, atuaisJson){
-  let atuais = [];
-  try{ atuais = JSON.parse(atuaisJson || '[]'); }catch(e){ atuais = []; }
+async function editarTags(channelId, nome, atuais){
   let sugestoes = [];
   try{
     const { data } = await sb.rpc('listar_tags');
@@ -2252,7 +2286,7 @@ async function editarTags(channelId, nome, atuaisJson){
   }catch(e){}
   const val = (atuais||[]).join(', ');
   abrirModal(
-    '<h3>Tags</h3><div class="fsub">'+esc(nome)+'</div>'+
+    '<h3>Tags</h3><div class="fsub">'+nome+'</div>'+
     '<div class="fld"><label>Separadas por vírgula</label>'+
       '<input id="tg_in" placeholder="hilton, rj, migrado" value="'+val.replace(/"/g,'&quot;')+'"></div>'+
     (sugestoes.length
@@ -2294,7 +2328,7 @@ async function acessoRemoto(channelId, nomeCanal){
   const idv = (cred.rustdesk_id||''), sev = (cred.rustdesk_senha||'');
   abrirModal(
     '<h3>Acesso remoto</h3>'+
-    '<div class="fsub">'+esc(nomeCanal||'')+' · RustDesk</div>'+
+    '<div class="fsub">'+(nomeCanal||'')+' · RustDesk</div>'+
     '<div class="fld"><label>ID do RustDesk</label>'+
       '<input id="rd_id" placeholder="ex: 1234567890" value="'+idv.replace(/"/g,'&quot;')+'"></div>'+
     '<div class="fld"><label>Senha de acesso permanente</label>'+
@@ -2349,9 +2383,9 @@ async function novaMidia(){
   }
   abrirModal(`
     <h3>Subir mídia</h3>
-    <div class="fsub">Imagem (JPG, PNG, WebP, GIF) ou vídeo (MP4, WebM), até 50 MB.</div>
+    <div class="fsub">Imagem (JPG, PNG, WebP) ou vídeo (MP4), até 50 MB.</div>
     ${accSelect}
-    <div class="fld"><label>Arquivo</label><input id="nm_file" type="file" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm" onchange="previewMidia(this)"></div>
+    <div class="fld"><label>Arquivo</label><input id="nm_file" type="file" accept="image/jpeg,image/png,image/webp,video/mp4" onchange="previewMidia(this)"></div>
     <div class="fld"><label>Nome / título</label><input id="nm_nome" placeholder="Ex: Café da manhã"></div>
     <div class="fld" id="nm_dur_wrap"><label>Tempo na tela (segundos) — só imagem</label><input id="nm_dur" type="number" value="8" min="3" max="60"></div>
     <div id="nm_msg" class="fmsg"></div>
@@ -2398,30 +2432,9 @@ async function salvarMidia(){
   const fileEl=document.getElementById('nm_file');
   const f=fileEl && fileEl.files && fileEl.files[0];
   const msg=document.getElementById('nm_msg'), btn=document.getElementById('nm_btn');
-  /* TODA validação acontece ANTES de desabilitar o botão.
-     Havia duas verificações depois do btn.disabled=true que retornavam sem
-     reabilitá-lo: escolher um arquivo de tipo não suportado mostrava o erro e
-     deixava o Enviar travado, obrigando a fechar e reabrir o modal.
-     Havia também dois limites em conflito, 50 MB antes e 500 MB depois, sendo
-     que o segundo era inalcançável. Passa a existir um só, coerente com o
-     texto do modal. */
-  const MAX_MB    = 50;
-  const MAX_BYTES = MAX_MB * 1048576;
-  const TIPOS_OK  = ['video/mp4','video/webm','image/jpeg','image/png','image/webp','image/gif'];
-
-  const erro = (txt) => { msg.className='fmsg err'; msg.textContent = txt; btn.disabled = false; };
-
-  if(!f)    { erro('Escolha um arquivo.'); return; }
-  if(!nome) { erro('Dê um nome à mídia.'); return; }
-  if(f.size > MAX_BYTES){
-    erro('Arquivo de '+(f.size/1048576).toFixed(0)+' MB. O limite é '+MAX_MB+' MB.');
-    return;
-  }
-  if(f.type && !TIPOS_OK.includes(f.type)){
-    erro('Tipo não suportado ('+f.type+'). Use MP4, WebM, JPEG, PNG, WebP ou GIF.');
-    return;
-  }
-
+  if(!f){ msg.className='fmsg err'; msg.textContent='Escolha um arquivo.'; return; }
+  if(!nome){ msg.className='fmsg err'; msg.textContent='Dê um nome à mídia.'; return; }
+  if(f.size > 50*1048576){ msg.className='fmsg err'; msg.textContent='Arquivo acima de 50 MB.'; return; }
   const isVid=f.type.startsWith('video');
   const tipo=isVid?'video':'image';
 
@@ -2435,6 +2448,21 @@ async function salvarMidia(){
     dur = (real && real >= 1) ? real : 30;  // 30 só como fallback se não conseguir ler
   } else {
     dur = parseInt(val('nm_dur')||'8',10);
+  }
+
+  /* Sem limite de tamanho nem verificação de tipo, um upload podia encher a
+     cota do projeto ou colocar no canal um arquivo que o player não toca. */
+  const TIPOS_OK = ['video/mp4','video/webm','image/jpeg','image/png','image/webp','image/gif'];
+  const MAX_BYTES = 500 * 1024 * 1024;
+  if(f.size > MAX_BYTES){
+    msg.className='fmsg err';
+    msg.textContent='Arquivo muito grande ('+(f.size/1048576).toFixed(0)+' MB). O limite é 500 MB.';
+    return;
+  }
+  if(f.type && !TIPOS_OK.includes(f.type)){
+    msg.className='fmsg err';
+    msg.textContent='Tipo não suportado ('+esc(f.type)+'). Use MP4, WebM, JPEG, PNG, WebP ou GIF.';
+    return;
   }
 
   msg.textContent='Enviando arquivo…';
